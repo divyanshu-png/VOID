@@ -13,77 +13,7 @@ Primary Tech Stack: Python 3.11+, LangChain / LangGraph, Tree-sitter / AST Parse
 <head>
   <meta charset="UTF-8">
   <title>Project Metadata & Revision Index</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      color: #1f2937;
-      line-height: 1.5;
-      padding: 24px;
-    }
-
-    .section-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      border-bottom: 2px solid #e5e7eb;
-      padding-bottom: 8px;
-      margin-bottom: 16px;
-    }
-
-    .metadata-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
-      background-color: #f9fafb;
-      padding: 16px;
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
-    }
-
-    .metadata-item label {
-      display: block;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      font-weight: 600;
-      color: #6b7280;
-      margin-bottom: 4px;
-    }
-
-    .metadata-item span {
-      display: block;
-      min-height: 24px;
-      font-size: 0.95rem;
-      font-weight: 500;
-      border-bottom: 1px dashed #d1d5db;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-      font-size: 0.9rem;
-    }
-
-    th, td {
-      border: 1px solid #e5e7eb;
-      padding: 10px 14px;
-    }
-
-    th {
-      background-color: #f3f4f6;
-      font-weight: 600;
-      color: #374151;
-    }
-
-    tr:nth-child(even) {
-      background-color: #f9fafb;
-    }
-
-    .empty-cell {
-      height: 28px;
-    }
-  </style>
-</head>
+ </head>
 <body>
 
   <!-- Project Metadata Section -->
