@@ -1,44 +1,15 @@
 # VOID
 An autonomous CODE reviwer and security audit agent, that refactors the security layer and vulnerabilities fatal for real world deployments. 
 
+
+## 1. Project Metadata & Revision Index
 Project Codename: VOID
 Full Title: Autonomous Code Reviewer & Security Auditing Agent
 
 Primary Tech Stack: Python 3.11+, LangChain / LangGraph, Tree-sitter / AST Parser, ChromaDB / FAISS, Semgrep, FastAPI
 
-## 1. Project Metadata & Revision Index
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Project Metadata & Revision Index</title>
- </head>
-<body>
-
-  <!-- Project Metadata Section -->
-  <div class="section-title">Project Metadata</div>
-  <div class="metadata-grid">
-    <div class="metadata-item">
-      <label>Project Codename</label>
-      <span></span>
-    </div>
-    <div class="metadata-item">
-      <label>Full Title</label>
-      <span></span>
-    </div>
-    <div class="metadata-item">
-      <label>Repository</label>
-      <span></span>
-    </div>
-    <div class="metadata-item">
-      <label>Primary Tech Stack</label>
-      <span></span>
-    </div>
-  </div>
 
   <!-- Revision Index Section -->
-  <div class="section-title">Revision Index</div>
   <table>
     <thead>
       <tr>
