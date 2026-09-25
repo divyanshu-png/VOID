@@ -54,7 +54,7 @@ Primary Tech Stack: Python 3.11+, LangChain / LangGraph, Tree-sitter / AST Parse
 ## 3. Production Directory Structure:
 
 ```plaintext
-codesentinel/
+VOID/
 ├── backend/
 │ ├── app/
 │ │ ├── api/
