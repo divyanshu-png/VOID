@@ -53,6 +53,7 @@ Primary Tech Stack: Python 3.11+, LangChain / LangGraph, Tree-sitter / AST Parse
 
 ## 3. Production Directory Structure:
 
+```plaintext
 codesentinel/
 ├── backend/
 │ ├── app/
@@ -92,6 +93,7 @@ codesentinel/
 │ └── streamlit_app.py
 ├── .env.example
 └── README.md
+```
 
 # void README
 
