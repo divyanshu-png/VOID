@@ -1,26 +1,84 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
+import axios from "axios";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+  const disposable = vscode.commands.registerCommand(
+    "void.auditCurrentFile",
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage("VOID: Open a file to audit.");
+        return;
+      }
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "void" is now active!');
+      const document = editor.document;
+      const code = document.getText();
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('void.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from void!');
-	});
+      if (!code.trim()) {
+        vscode.window.showWarningMessage("VOID: The file is empty.");
+        return;
+      }
 
-	context.subscriptions.push(disposable);
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title:
+            "VOID: Running Agentic Security Review & Sandbox Verification...",
+          cancellable: false,
+        },
+        async () => {
+          try {
+            const response = await axios.post(
+              "http://localhost:8000/api/v1/audit",
+              {
+                code: code,
+                language: document.languageId,
+              },
+              { timeout: 60000 },
+            );
+
+            const data = response.data;
+
+            if (data.status === "SUCCESS" && data.refactored_code) {
+              const originalDoc = document.uri;
+              const refactoredDoc = vscode.Uri.parse(
+                `untitled:REFACTORED_${document.fileName}`,
+              );
+
+              const edit = new vscode.WorkspaceEdit();
+              edit.insert(
+                refactoredDoc,
+                new vscode.Position(0, 0),
+                data.refactored_code,
+              );
+              await vscode.workspace.applyEdit(edit);
+
+              await vscode.commands.executeCommand(
+                "vscode.diff",
+                originalDoc,
+                refactoredDoc,
+                `VOID Review: ${document.fileName} (Tests: ${data.test_status})`,
+              );
+
+              vscode.window.showInformationMessage(
+                `Audit Complete! Sandbox Tests: ${data.test_status} (${data.retries} retries).`,
+              );
+            } else {
+              vscode.window.showErrorMessage(
+                "VOID: Review completed without refactored suggestions.",
+              );
+            }
+          } catch (err: any) {
+            vscode.window.showErrorMessage(
+              `VOID Error: ${err.message || "Failed to connect to backend."}`,
+            );
+          }
+        },
+      );
+    },
+  );
+
+  context.subscriptions.push(disposable);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}

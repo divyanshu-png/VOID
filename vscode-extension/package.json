@@ -1,55 +1,37 @@
 {
   "name": "void",
-  "displayName": "void",
-  "description": "",
+  "displayName": "VOID Agentic Code Reviewer",
+  "description": "Autonomous security audit and sandboxed self-correcting refactoring agent",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.138.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Linters"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "void.helloWorld",
-        "title": "Hello World"
+        "command": "void.auditCurrentFile",
+        "title": "VOID: Audit & Refactor Code"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "void.auditCurrentFile",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
-    "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
-    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test"
-  },
-  "devDependencies": {
-    "@types/mocha": "^10.0.10",
-    "@types/node": "24.x",
-    "@types/vscode": "^1.138.0",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0",
-    "esbuild": "^0.28.1",
-    "eslint": "^10.5.0",
-    "npm-run-all": "^4.1.5",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.61.1"
-  },
-  "overrides": {
-    "diff": "^8.0.4",
-    "serialize-javascript": "^7.0.6"
-  },
-  "dependencies": {
-    "axios": "^1.20.0"
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "package": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify"
   }
 }
