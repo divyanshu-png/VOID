@@ -11,8 +11,8 @@ from app.tools.pypi_validator import verify_packages
 from app.core.sandbox import execute_in_sandbox
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    api_key=GEMINI_API_KEY,
+    model="gemini-2.0-flash",
+    google_api_key=GEMINI_API_KEY,
     temperature=0.1
 )
 
@@ -94,7 +94,8 @@ def sandbox_verification_node(state: AgentCodeState) -> AgentCodeState:
 
 def presentation_node(state: AgentCodeState) -> AgentCodeState:
     orig = state["original_code"].splitlines(keepends=True)
-    refactored = (state["refactored_code"] or "").splitlines(keepends=True)
+    refactored_str = state.get("refactored_code") or state["original_code"]
+    refactored = refactored_str.splitlines(keepends=True)
     diff = difflib.unified_diff(orig, refactored, fromfile="original.py", tofile="refactored.py")
     state["final_diff"] = "".join(diff)
     return state
