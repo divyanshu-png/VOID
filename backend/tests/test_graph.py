@@ -1,14 +1,16 @@
-import os
 from dotenv import load_dotenv
 
 # Load environment before any tests run
 load_dotenv()
+
+from types import SimpleNamespace
 
 import pytest
 from app.tools.ast_parser import parse_code_structure
 from app.tools.pypi_validator import verify_packages
 from app.core.sandbox import execute_in_sandbox
 from app.graph.workflow import agent_graph
+import app.graph.workflow as workflow_module
 
 def test_ast_parser_extracts_imports_and_functions():
     code = """
@@ -24,7 +26,14 @@ def fetch_data(query):
     assert len(result["functions"]) == 1
     assert result["functions"][0]["name"] == "fetch_data"
 
-def test_pypi_validator_flags_fake_package():
+def test_pypi_validator_flags_fake_package(monkeypatch):
+    class NotFoundResponse:
+        status_code = 404
+
+    monkeypatch.setattr(
+        "app.tools.pypi_validator.requests.get",
+        lambda *_args, **_kwargs: NotFoundResponse(),
+    )
     fake_pkg = ["non_existent_fake_package_xyz_999"]
     alerts = verify_packages(fake_pkg)
     assert len(alerts) == 1
@@ -37,8 +46,36 @@ def test_sandbox_executes_valid_code():
     assert passed is True
     assert logs is None
 
-@pytest.mark.skipif(not pytest.importorskip("os").getenv("GEMINI_API_KEY"), reason="Requires GEMINI_API_KEY")
-def test_full_pipeline_vulnerable_code():
+def test_full_pipeline_vulnerable_code(monkeypatch):
+    # Keep the regular test suite independent of Gemini credentials/network access.
+    responses = iter([
+        "SQL injection risk: use a parameterized query.",
+        """def get_user(cursor, uid):
+    cursor.execute("SELECT * FROM users WHERE id = ?", (uid,))
+    return cursor.fetchall()
+---TEST_SPLIT---
+class FakeCursor:
+    def execute(self, query, params):
+        self.query = query
+        self.params = params
+
+    def fetchall(self):
+        return [("user",)]
+
+def test_get_user_uses_parameterized_query():
+    cursor = FakeCursor()
+    assert get_user(cursor, "' OR 1=1 --") == [("user",)]
+    assert cursor.query == "SELECT * FROM users WHERE id = ?"
+    assert cursor.params == ("' OR 1=1 --",)
+""",
+    ])
+
+    class FakeLLM:
+        def invoke(self, _messages):
+            return SimpleNamespace(content=next(responses))
+
+    monkeypatch.setattr(workflow_module, "llm", FakeLLM())
+
     vulnerable_snippet = """
 import sqlite3
 

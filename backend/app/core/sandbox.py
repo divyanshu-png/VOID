@@ -1,6 +1,7 @@
 import subprocess
 import tempfile
 import os
+import sys
 from typing import Tuple, Optional
 
 def execute_in_sandbox(refactored_code: str, test_code: str, timeout_seconds: int = 6) -> Tuple[bool, Optional[str]]:
@@ -17,7 +18,7 @@ def execute_in_sandbox(refactored_code: str, test_code: str, timeout_seconds: in
 
         try:
             result = subprocess.run(
-                ["pytest", test_file_path, "-q"],
+                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_file_path],
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,

@@ -1,3 +1,4 @@
+import traceback
 from fastapi import APIRouter, HTTPException
 from app.api.schemas import AuditRequest, AuditResponse
 from app.graph.workflow import agent_graph
@@ -24,7 +25,6 @@ async def review_code(payload: AuditRequest):
     }
 
     try:
-        # Executes the state graph until END is reached
         final_state = agent_graph.invoke(initial_state)
 
         return AuditResponse(
@@ -37,4 +37,5 @@ async def review_code(payload: AuditRequest):
             error_logs=final_state.get("error_logs")
         )
     except Exception as e:
+        traceback.print_exc()  # Prints the full stack trace to the terminal
         raise HTTPException(status_code=500, detail=f"Agent runtime failure: {str(e)}")

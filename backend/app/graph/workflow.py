@@ -3,15 +3,20 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.core.config import GEMINI_API_KEY
+from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.graph.state import AgentCodeState
 from app.tools.ast_parser import parse_code_structure
 from app.tools.sast_scanner import run_bandit_scan
 from app.tools.pypi_validator import verify_packages
 from app.core.sandbox import execute_in_sandbox
 
+import logging
+
+# Suppress AFC informational notices from the Google GenAI SDK
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model=GEMINI_MODEL,
     google_api_key=GEMINI_API_KEY,
     temperature=0.1
 )
@@ -94,8 +99,8 @@ def sandbox_verification_node(state: AgentCodeState) -> AgentCodeState:
 
 def presentation_node(state: AgentCodeState) -> AgentCodeState:
     orig = state["original_code"].splitlines(keepends=True)
-    refactored_str = state.get("refactored_code") or state["original_code"]
-    refactored = refactored_str.splitlines(keepends=True)
+    refactored_text = state.get("refactored_code") or state["original_code"]
+    refactored = refactored_text.splitlines(keepends=True)
     diff = difflib.unified_diff(orig, refactored, fromfile="original.py", tofile="refactored.py")
     state["final_diff"] = "".join(diff)
     return state
