@@ -1,0 +1,18 @@
+# Test runner
+pytest>=8.0
+# Common libraries that patched code may import. There is no network inside the
+# sandbox, so anything not listed here is unavailable; generated tests are
+# expected to mock network / database calls.
+requests
+flask
+fastapi
+pydantic
+pyyaml
+jinja2
+sqlalchemy
+cryptography
+bcrypt
+pyjwt
+python-dateutil
+lxml
+defusedxml

@@ -4,3 +4,11 @@ __pycache__/
 *.pyc
 .env
 .venv/
+venv/
+.pytest_cache/
+backend/replays/
+backend/.repo_cache/
+backend/eval/results/
+*.vsix
+.DS_Store
+*.tsbuildinfo

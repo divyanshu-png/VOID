@@ -1,8 +1,13 @@
 {
   "name": "void",
   "displayName": "VOID Agentic Code Reviewer",
-  "description": "Autonomous security audit and sandboxed self-correcting refactoring agent",
-  "version": "0.0.1",
+  "description": "Security findings as you save, and verified one-click fixes: every patch must pass a Bandit re-scan and sandboxed tests.",
+  "version": "0.2.0",
+  "publisher": "void-adgips",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/divyanshu-png/VOID"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -10,31 +15,89 @@
     "Programming Languages",
     "Linters"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
+        "command": "void.fixAtCursor",
+        "title": "VOID: Fix Vulnerability at Cursor"
+      },
+      {
         "command": "void.auditCurrentFile",
-        "title": "VOID: Audit & Refactor Code"
+        "title": "VOID: Audit & Refactor Whole File"
+      },
+      {
+        "command": "void.scanFile",
+        "title": "VOID: Scan File for Vulnerabilities"
+      },
+      {
+        "command": "void.openDashboard",
+        "title": "VOID: Open Dashboard"
       }
     ],
     "menus": {
       "editor/context": [
         {
+          "command": "void.fixAtCursor",
+          "when": "editorLangId == python",
+          "group": "navigation@1"
+        },
+        {
           "command": "void.auditCurrentFile",
-          "group": "navigation"
+          "when": "editorLangId == python",
+          "group": "navigation@2"
         }
       ]
+    },
+    "configuration": {
+      "title": "VOID",
+      "properties": {
+        "void.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL of the VOID backend."
+        },
+        "void.oracleMode": {
+          "type": "string",
+          "enum": ["dual", "exec", "sast", "single"],
+          "enumDescriptions": [
+            "C3: accept a patch only when the Bandit re-scan AND the generated tests pass (recommended)",
+            "C2: generated tests only",
+            "C1: Bandit re-scan only",
+            "C0: one attempt, no feedback loop"
+          ],
+          "default": "dual",
+          "description": "Which oracles must pass before a patch is accepted."
+        },
+        "void.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a fast Bandit + package scan (no AI) whenever a Python file is saved."
+        },
+        "void.timeoutSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "Maximum time to wait for a repair."
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
-    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
-    "package": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify"
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node esbuild.js --production",
+    "typecheck": "tsc --noEmit",
+    "vsix": "vsce package --skip-license"
   },
-  "dependencies": {
-    "axios": "^1.20.0"
+  "devDependencies": {
+    "@types/node": "20.17.6",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.2.1",
+    "esbuild": "0.24.0",
+    "typescript": "5.6.3"
   }
 }
