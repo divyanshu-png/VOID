@@ -9,6 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from app.core import config
+from app.core.llm import LLMError
 from app.api.schemas import AuditRequest, AuditResponse, RepoRunRequest, RepoScanRequest, ScanRequest
 from app.services.replays import Recorder, list_replays, load_replay
 from app.services.runner import run_events
@@ -70,7 +71,8 @@ def review_code_stream(payload: AuditRequest):
                     ev["data"]["replay_id"] = rec.id
                 yield _sse(ev["event"], ev["data"])
         except Exception as e:
-            traceback.print_exc()
+            if not isinstance(e, LLMError):
+                traceback.print_exc()
             rec.add("error", {"message": str(e)})
             yield _sse("error", {"message": str(e)})
         finally:
@@ -157,6 +159,12 @@ def repo_run(payload: RepoRunRequest):
                             yield _sse("target_done", data)
                         else:
                             yield _sse(ev["event"], data)
+                except LLMError as e:
+                    # Key / billing / model problems affect every target: stop and say why.
+                    summary["errors"] += 1
+                    yield _sse("target_error", rec.add("target_error", {"target": t["id"], "message": str(e)})["data"])
+                    yield _sse("error", rec.add("error", {"message": str(e)})["data"])
+                    return
                 except Exception as e:
                     traceback.print_exc()
                     summary["errors"] += 1

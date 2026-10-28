@@ -109,6 +109,28 @@ def _numbered(code: str) -> str:
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
+class LLMError(RuntimeError):
+    """An LLM failure with a human-readable explanation (shown in the UI)."""
+
+
+def explain_error(text: str, model: str) -> str:
+    if "prepayment credits are depleted" in text or ("402" in text and "RESOURCE_EXHAUSTED" in text):
+        return ("Gemini refused the request: the prepaid credits on this API key's Google project are used up. "
+                "Top up billing at https://ai.studio/projects, or use a key from another project.")
+    if "429" in text or "RESOURCE_EXHAUSTED" in text:
+        return "Gemini rate limit / quota reached for this key. Wait a minute or use a key with more quota."
+    if "NOT_FOUND" in text and "model" in text.lower():
+        hint = re.search(r"use models/([\w.-]+)", text)
+        suggestion = f" Google suggests GEMINI_MODEL={hint.group(1)}." if hint else ""
+        return f"Model '{model}' is not available to this key. Change GEMINI_MODEL in backend/.env.{suggestion}"
+    if "API_KEY_SERVICE_BLOCKED" in text or "PERMISSION_DENIED" in text:
+        return ("This API key is not allowed to call Gemini (it is restricted to other Google APIs). "
+                "Create a Gemini API key at https://aistudio.google.com/apikey.")
+    if "API key not valid" in text or "API_KEY_INVALID" in text:
+        return "The GEMINI_API_KEY in backend/.env is not valid."
+    return f"Gemini call failed: {text[:400]}"
+
+
 class GeminiClient:
     """Thin wrapper around langchain-google-genai with usage accounting."""
 
@@ -156,7 +178,10 @@ class GeminiClient:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         started = time.time()
-        out = self._invoke(schema, [SystemMessage(content=system), HumanMessage(content=user)])
+        try:
+            out = self._invoke(schema, [SystemMessage(content=system), HumanMessage(content=user)])
+        except Exception as exc:
+            raise LLMError(explain_error(str(exc), self.model_name)) from exc
         self.seconds += time.time() - started
         self.calls += 1
         raw = out.get("raw")

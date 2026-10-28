@@ -28,7 +28,7 @@ def _int(name: str, default: int) -> int:
 
 # --- LLM ---------------------------------------------------------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 # Which Google endpoint the key belongs to: the Gemini API (AI Studio keys) or
 # Vertex AI. auto = start with the Gemini API and switch once if Google says the
