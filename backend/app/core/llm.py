@@ -119,6 +119,7 @@ class GeminiClient:
             model=self.model_name,
             google_api_key=config.require_api_key(),
             temperature=config.LLM_TEMPERATURE if temperature is None else temperature,
+            vertexai=config.USE_VERTEXAI,
         )
         self.calls = 0
         self.input_tokens = 0

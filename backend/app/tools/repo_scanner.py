@@ -64,8 +64,28 @@ def local_modules(root: Path) -> Set[str]:
     return names
 
 
+LANG_EXT = {".py": "Python", ".ts": "TypeScript", ".tsx": "TypeScript", ".js": "JavaScript", ".jsx": "JavaScript",
+            ".java": "Java", ".go": "Go", ".rb": "Ruby", ".php": "PHP", ".cs": "C#", ".rs": "Rust", ".kt": "Kotlin",
+            ".c": "C", ".cpp": "C++", ".swift": "Swift"}
+
+
+def languages(root: Path) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and not any(x in {".git", "node_modules", ".venv", "venv", "dist", "build"} for x in p.parts):
+            lang = LANG_EXT.get(p.suffix.lower())
+            if lang:
+                counts[lang] = counts.get(lang, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
 def scan_repo(url: str, min_severity: str = "MEDIUM", limit: int = 25, refresh: bool = False) -> Dict[str, Any]:
     root = clone(url, refresh=refresh)
+    langs = languages(root)
+    if not langs.get("Python"):
+        found = ", ".join(f"{k} ({v} files)" for k, v in list(langs.items())[:3]) or "no source files"
+        raise ValueError(f"This repository has no Python files (found {found}). VOID currently reviews Python only; "
+                         "JavaScript/TypeScript support is planned work.")
     findings = scan_path(str(root))
     floor = SEVERITY_RANK.get(min_severity.upper(), 2)
     targets: Dict[str, Dict[str, Any]] = {}
@@ -97,7 +117,7 @@ def scan_repo(url: str, min_severity: str = "MEDIUM", limit: int = 25, refresh: 
         sev_counts[str(f.get("severity"))] = sev_counts.get(str(f.get("severity")), 0) + 1
     return {
         "repo": f"{owner}/{repo}", "url": url, "python_files": py_files,
-        "total_findings": len(findings), "by_severity": sev_counts,
+        "total_findings": len(findings), "by_severity": sev_counts, "languages": langs,
         "targets": ranked, "local_modules": sorted(local_modules(root)),
     }
 

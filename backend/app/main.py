@@ -28,6 +28,7 @@ def health_check():
         "model": "stub (no LLM)" if config.STUB_LLM else config.GEMINI_MODEL,
         "stub_llm": config.STUB_LLM,
         "api_key_configured": bool(config.GEMINI_API_KEY),
+        "endpoint": "vertex-ai" if config.USE_VERTEXAI else "gemini-api",
         "oracle_mode": config.ORACLE_MODE,
         "max_retries": config.MAX_RETRIES,
         "sandbox": active_backend(),

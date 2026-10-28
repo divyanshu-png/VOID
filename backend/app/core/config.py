@@ -30,6 +30,10 @@ def _int(name: str, default: int) -> int:
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+# Google issues two kinds of keys: Gemini API keys ("AIza...") and Vertex AI
+# express-mode keys ("AQ...."). auto picks the right endpoint from the key.
+_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "auto").lower()
+USE_VERTEXAI = (bool(GEMINI_API_KEY) and GEMINI_API_KEY.startswith("AQ.")) if _vertex == "auto" else _vertex in ("1", "true", "yes")
 
 # --- Server ------------------------------------------------------------------
 HOST = os.getenv("HOST", "0.0.0.0")
