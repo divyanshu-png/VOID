@@ -1,20 +1,24 @@
 """Execution oracle: runs candidate code + tests in isolation.
 
 Two backends:
-  * docker      - a fresh, throwaway container per run: no network, no secrets,
-                  capped CPU / memory / processes, read-only filesystem, non-root.
+  * docker      - one long-lived container (void-sandbox-pool), reused by every run:
+                  no network, no secrets, capped CPU / memory / processes, read-only
+                  filesystem, non-root. Each run gets its own scratch directory in
+                  the container's tmpfs, deleted when the run ends.
   * subprocess  - development fallback when Docker is not available: separate
                   process with a scrubbed environment (no API keys), CPU/memory
                   rlimits and a hard timeout. NOT a security boundary.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -150,30 +154,85 @@ def _syntax_precheck(source: str) -> Optional[str]:
         return f"SyntaxError: line {exc.lineno}: {exc.msg}"
 
 
-def _run_docker(workdir: str, timeout: int) -> tuple[int, str, bool]:
-    name = f"void-sbx-{uuid.uuid4().hex[:10]}"
-    cmd = [
-        "docker", "run", "--rm", "--name", name,
-        "--network", "none",
-        "--memory", f"{config.SANDBOX_MEMORY_MB}m", "--memory-swap", f"{config.SANDBOX_MEMORY_MB}m",
-        "--cpus", "0.5",
-        "--pids-limit", "64",
-        "--read-only", "--tmpfs", "/tmp:rw,size=64m",
-        "--user", "65534:65534",
-        "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
-        "-e", "HOME=/tmp", "-e", "PYTHONDONTWRITEBYTECODE=1",
-        "-v", f"{workdir}:/work:ro",
-        "-w", "/work",
-        config.SANDBOX_IMAGE,
-        "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short", "test_candidate.py",
-    ]
+POOL_NAME = "void-sandbox-pool"
+_POOL_LOCK = threading.Lock()
+
+# Runs inside the long-lived container: writes one run's files to a private
+# scratch directory, runs pytest with a timeout, prints the result as JSON and
+# deletes the directory again.
+_IN_CONTAINER = r"""
+import json, os, resource, shutil, signal, subprocess, sys, tempfile
+job = json.load(sys.stdin)
+work = tempfile.mkdtemp(prefix="run-", dir="/tmp")
+def limits():
+    mem = job["mem_mb"] * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+    resource.setrlimit(resource.RLIMIT_CPU, (job["timeout"] + 1, job["timeout"] + 1))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (16 << 20, 16 << 20))
+try:
+    for name, text in job["files"].items():
+        with open(os.path.join(work, name), "w") as fh:
+            fh.write(text)
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": work, "PYTHONDONTWRITEBYTECODE": "1"}
+    p = subprocess.Popen([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short", "test_candidate.py"],
+                         cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         preexec_fn=limits, start_new_session=True)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-        return r.returncode, (r.stdout or "") + (r.stderr or ""), False
+        out, _ = p.communicate(timeout=job["timeout"])
+        res = {"rc": p.returncode, "out": out, "timeout": False}
     except subprocess.TimeoutExpired:
-        subprocess.run(["docker", "kill", name], capture_output=True)
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        res = {"rc": -1, "out": "", "timeout": True}
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("\n@@VOID@@" + json.dumps(res))
+"""
+
+
+def _ensure_pool() -> None:
+    """Start the shared sandbox container once; later runs reuse it instead of starting a new one."""
+    with _POOL_LOCK:
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", POOL_NAME], capture_output=True, text=True)
+        if r.stdout.strip() == "true":
+            return
+        subprocess.run(["docker", "rm", "-f", POOL_NAME], capture_output=True)
+        subprocess.run([
+            "docker", "run", "-d", "--name", POOL_NAME,
+            "--network", "none",
+            "--memory", f"{config.SANDBOX_MEMORY_MB * 4}m", "--memory-swap", f"{config.SANDBOX_MEMORY_MB * 4}m",
+            "--cpus", "2",
+            "--pids-limit", "256",
+            "--read-only", "--tmpfs", "/tmp:rw,size=256m",
+            "--user", "65534:65534",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "-e", "HOME=/tmp", "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "--restart", "unless-stopped",
+            config.SANDBOX_IMAGE, "sleep", "infinity",
+        ], capture_output=True, text=True, check=True)
+
+
+def _run_docker(workdir: str, timeout: int) -> tuple[int, str, bool]:
+    files = {}
+    for name in ("test_candidate.py", "conftest.py"):
+        with open(os.path.join(workdir, name), encoding="utf-8") as fh:
+            files[name] = fh.read()
+    job = json.dumps({"files": files, "timeout": timeout, "mem_mb": max(1024, config.SANDBOX_MEMORY_MB * 4)})
+    try:
+        _ensure_pool()
+        r = subprocess.run(["docker", "exec", "-i", POOL_NAME, "python", "-c", _IN_CONTAINER],
+                           input=job, capture_output=True, text=True, timeout=timeout + 15)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "rm", "-f", POOL_NAME], capture_output=True)  # wedged: next run starts a fresh one
         return -1, "", True
+    except subprocess.CalledProcessError as exc:
+        return -2, f"Sandbox launch error: {exc.stderr or exc}", False
+    head, sep, tail = (r.stdout or "").rpartition("@@VOID@@")
+    if not sep:
+        return -2, f"Sandbox error: {(r.stderr or r.stdout or '')[-2000:]}", False
+    res = json.loads(tail)
+    return res["rc"], res["out"], res["timeout"]
 
 
 def _limits():  # pragma: no cover - runs in the child process

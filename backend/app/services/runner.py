@@ -29,7 +29,11 @@ def summarise(node: str, update: Dict[str, Any], state: Dict[str, Any]) -> Dict[
         ex["logs"] = _trim(ex.get("logs"))
         sa = {k: v for k, v in (last.get("sast") or {}).items() if k != "after"}
         return {"attempt": last.get("n"), "accepted": last.get("accepted"), "exec": ex, "sast": sa,
-                "feedback": _trim(last.get("feedback"), 2500)}
+                "action": last.get("action"), "feedback": _trim(last.get("feedback"), 2500)}
+    if node in ("critic", "supervisor"):
+        last = (update.get("attempts") or [{}])[-1]
+        return {"attempt": last.get("n"), "accepted": last.get("accepted"), "critic": last.get("critic"),
+                "decision": last.get("decision"), "feedback": _trim(last.get("feedback"), 2500)}
     if node == "presentation":
         return {"verdict": update.get("verdict"), "final_diff": update.get("final_diff")}
     return {}
@@ -40,7 +44,8 @@ def final_result(state: Dict[str, Any]) -> Dict[str, Any]:
     for a in state.get("attempts", []):
         ex = dict(a.get("exec", {}))
         ex["logs"] = _trim(ex.get("logs"))
-        attempts.append({"n": a.get("n"), "accepted": a.get("accepted"), "exec": ex,
+        attempts.append({"n": a.get("n"), "accepted": a.get("accepted"), "exec": ex, "action": a.get("action"),
+                         "critic": a.get("critic"), "decision": a.get("decision"),
                          "sast": {k: v for k, v in (a.get("sast") or {}).items() if k != "after"}})
     verdict = state.get("verdict", "")
     return {

@@ -1,3 +1,4 @@
+import logging
 import os
 import uvicorn
 from fastapi import FastAPI
@@ -19,6 +20,16 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+
+class _SkipHealth(logging.Filter):
+    """Keep the UI's periodic /health checks out of the access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/health" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_SkipHealth())
 
 
 @app.get("/health")

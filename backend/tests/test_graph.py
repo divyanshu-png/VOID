@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.llm import AuditResult, Finding, RepairResult
+from app.core.llm import AuditResult, CriticResult, Finding, RepairResult, SupervisorDecision
 from app.core.sandbox import execute_in_sandbox
 from app.graph.workflow import run_review, stream_review
 from app.tools import pypi_validator
@@ -55,6 +55,29 @@ class FakeLLM:
 
     def usage(self):
         return {"llm_calls": self.calls}
+
+
+class AutoLLM(FakeLLM):
+    """FakeLLM plus scripted critic verdicts and supervisor decisions (autonomous mode)."""
+
+    def __init__(self, repairs, critiques=(), decisions=()):
+        super().__init__(repairs)
+        self.critiques, self.decisions = list(critiques), list(decisions)
+        self.audits = 0
+        self.history = []
+
+    def audit(self, *a, feedback=None):
+        self.audits += 1
+        return super().audit(*a)
+
+    def critique(self, *a):
+        self.calls += 1
+        return self.critiques.pop(0) if self.critiques else CriticResult(approved=True)
+
+    def decide(self, findings, history, budget_left, reaudits_left):
+        self.calls += 1
+        self.history.append(history)
+        return self.decisions.pop(0)
 
 
 @pytest.fixture(autouse=True)
@@ -175,8 +198,51 @@ def test_retry_budget_is_respected():
 
 def test_stream_emits_every_stage():
     llm = FakeLLM([RepairResult(patched_code=FIXED, tests=GOOD_TESTS)])
-    nodes = [n for n, _, _ in stream_review(VULN, llm=llm)]
+    nodes = [n for n, _, _ in stream_review(VULN, oracle_mode="dual", llm=llm)]
     assert nodes == ["ast_parser", "security_audit", "refactor", "sandbox", "presentation"]
+
+
+# ------------------------------------------------------------------ autonomous mode (C4)
+def test_auto_accepts_only_after_critic_approves():
+    llm = AutoLLM([RepairResult(patched_code=FIXED, tests=GOOD_TESTS)])
+    nodes = [n for n, _, _ in stream_review(VULN, oracle_mode="auto", llm=llm)]
+    assert nodes == ["ast_parser", "security_audit", "refactor", "sandbox", "critic", "supervisor", "presentation"]
+    state = run_review(VULN, oracle_mode="auto", llm=AutoLLM([RepairResult(patched_code=FIXED, tests=GOOD_TESTS)]))
+    assert state["verdict"] == "verified" and state["attempts"][0]["decision"]["action"] == "accept"
+
+
+def test_auto_critic_veto_overrides_passing_oracles():
+    """Both oracles pass, but the critic sees an out-of-scope change: the supervisor must not accept."""
+    llm = AutoLLM([RepairResult(patched_code=FIXED, tests=GOOD_TESTS)] * 2,
+                  critiques=[CriticResult(approved=False, issues=["imports wrapped in try/except"])],
+                  decisions=[SupervisorDecision(action="repair_code", reason="critic veto", guidance="undo the import change")])
+    state = run_review(VULN, oracle_mode="auto", llm=llm)
+    a1, a2 = state["attempts"]
+    assert a1["sast"]["passed"] and a1["exec"]["passed"] and not a1["accepted"]
+    assert "try/except" in llm.feedback[1] and "undo the import change" in llm.feedback[1]
+    assert a2["accepted"] and state["verdict"] == "verified"
+
+
+def test_auto_supervisor_can_rewrite_only_the_tests():
+    broken_tests = "def test_wrong():\n    assert get_user is None\n"
+    llm = AutoLLM([RepairResult(patched_code=FIXED, tests=broken_tests),
+                   RepairResult(patched_code="garbage that must be ignored", tests=GOOD_TESTS)],
+                  decisions=[SupervisorDecision(action="repair_tests", reason="code fine, test wrong")])
+    state = run_review(VULN, oracle_mode="auto", llm=llm)
+    a2 = state["attempts"][1]
+    assert a2["action"] == "repair_tests" and a2["patched_code"] == FIXED and state["verdict"] == "verified"
+
+
+def test_auto_supervisor_reaudit_and_give_up():
+    llm = AutoLLM([RepairResult(patched_code=VULN, tests=TRIVIAL_TESTS)] * 3,
+                  decisions=[SupervisorDecision(action="reaudit", reason="audit wrong"),
+                             SupervisorDecision(action="reaudit", reason="still wrong"),
+                             SupervisorDecision(action="give_up", reason="no progress")])
+    state = run_review(VULN, oracle_mode="auto", max_retries=3, llm=llm)
+    assert llm.audits == 2                                     # second re-audit request is capped
+    assert state["attempts"][-1]["decision"]["action"] == "give_up"
+    assert state["retry_count"] == 3 and state["verdict"] == "unverified"
+    assert llm.history[0][0]["sast_remaining"] == ["B608"]      # supervisor saw the oracle evidence
 
 
 def test_invalid_input_short_circuits():

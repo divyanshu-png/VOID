@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from app.core.llm import AuditResult, Finding, RepairResult
+from app.core.llm import AuditResult, CriticResult, Finding, RepairResult, SupervisorDecision
 
 RULES = [
     # (bandit id, CWE, title, regex, replacement)
@@ -36,7 +36,8 @@ class StubLLM:
     def __init__(self):
         self.calls = 0
 
-    def audit(self, code: str, ast_meta: dict, static_issues: list, packages: list) -> AuditResult:
+    def audit(self, code: str, ast_meta: dict, static_issues: list, packages: list,
+              feedback: Optional[str] = None) -> AuditResult:
         self.calls += 1
         findings: List[Finding] = []
         for f in static_issues:
@@ -71,6 +72,24 @@ class StubLLM:
             tests += "    assert True\n"
         return RepairResult(patched_code=patched, tests=tests,
                             notes=f"Stub rewrite applied rules: {', '.join(used) or 'none'}")
+
+    def critique(self, original: str, patched: str, tests: str, findings: list, checks: dict) -> CriticResult:
+        self.calls += 1
+        issues = []
+        if patched.strip() == original.strip():
+            issues.append("The patch makes no change.")
+        if "# nosec" in patched and "# nosec" not in original:
+            issues.append("The patch silences Bandit with '# nosec' instead of fixing the code.")
+        if re.search(r"^try:\s*\n\s+(import|from) ", patched, flags=re.M):
+            issues.append("Imports are wrapped in try/except, which is out of scope.")
+        return CriticResult(approved=not issues, issues=issues, summary="Stub critic (rule-based).")
+
+    def decide(self, findings: list, history: list, budget_left: int, reaudits_left: int) -> SupervisorDecision:
+        self.calls += 1
+        last = history[-1] if history else {}
+        if last.get("sast_passed") and last.get("critic_approved") and not last.get("exec_passed"):
+            return SupervisorDecision(action="repair_tests", reason="Code checks pass; only the tests fail.")
+        return SupervisorDecision(action="repair_code", reason="Stub supervisor: retry the repair.")
 
     def usage(self) -> dict:
         return {"llm_calls": self.calls, "model": "stub (no LLM)"}

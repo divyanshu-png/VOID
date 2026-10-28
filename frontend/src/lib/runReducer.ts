@@ -40,7 +40,7 @@ export function applyEvent(prev: RunState, ev: StreamEvent): RunState {
       s.focus = d;
       return s;
     case "node": {
-      const node = d.node as StageId;
+      const node = d.node as StageId | "critic" | "supervisor";
       if (node === "ast_parser") {
         s.ast = d.ast_metadata;
         s.sastBefore = d.sast_before || [];
@@ -71,6 +71,16 @@ export function applyEvent(prev: RunState, ev: StreamEvent): RunState {
         s.stages.sandbox = "done";
         s.stages.refactor = "active"; // provisional: switched to done when the result arrives
         s.stages.presentation = "pending";
+      } else if (node === "critic" || node === "supervisor") {
+        // Autonomous mode: the critic reviews the patch, then the supervisor picks the next step.
+        const last = s.attempts[s.attempts.length - 1];
+        if (last) Object.assign(last, { accepted: d.accepted, critic: d.critic, decision: d.decision, feedback: d.feedback });
+        const next = d.decision?.action;
+        s.stages.sandbox = node === "critic" ? "active" : "done";
+        if (node === "supervisor") {
+          s.stages.refactor = next === "repair_code" || next === "repair_tests" ? "active" : "done";
+          if (next === "reaudit") s.stages.security_audit = "active";
+        }
       } else if (node === "presentation") {
         if (s.stages.refactor === "active") s.stages.refactor = "done";
         s.stages.presentation = "done";

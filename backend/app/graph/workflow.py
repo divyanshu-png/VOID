@@ -2,6 +2,11 @@
 
     precheck -> security_audit -> refactor -> sandbox --(rejected & retries left)--> refactor
                                                        \\--(accepted / budget spent)--> presentation
+
+Autonomous mode (auto) adds two agents after the sandbox:
+    sandbox -> critic -> supervisor --repair_code / repair_tests--> refactor
+                                    --reaudit--> security_audit
+                                    --accept / give_up--> presentation
 """
 from __future__ import annotations
 
@@ -11,12 +16,12 @@ from langgraph.graph import END, StateGraph
 
 from app.core import config as settings
 from app.graph.nodes import (
-    MODES, audit_node, precheck_node, presentation_node, refactor_node, route_after_audit,
-    route_after_precheck, route_after_sandbox, sandbox_verification_node,
+    MODES, audit_node, critic_node, precheck_node, presentation_node, refactor_node, route_after_audit,
+    route_after_precheck, route_after_sandbox, route_after_supervisor, sandbox_verification_node, supervisor_node,
 )
 from app.graph.state import AgentCodeState, initial_state
 
-NODE_ORDER = ["ast_parser", "security_audit", "refactor", "sandbox", "presentation"]
+NODE_ORDER = ["ast_parser", "security_audit", "refactor", "sandbox", "critic", "supervisor", "presentation"]
 
 
 def build_graph():
@@ -25,6 +30,8 @@ def build_graph():
     g.add_node("security_audit", audit_node)
     g.add_node("refactor", refactor_node)
     g.add_node("sandbox", sandbox_verification_node)
+    g.add_node("critic", critic_node)
+    g.add_node("supervisor", supervisor_node)
     g.add_node("presentation", presentation_node)
 
     g.set_entry_point("ast_parser")
@@ -34,7 +41,10 @@ def build_graph():
                             {"refactor": "refactor", "presentation": "presentation"})
     g.add_edge("refactor", "sandbox")
     g.add_conditional_edges("sandbox", route_after_sandbox,
-                            {"refactor": "refactor", "presentation": "presentation"})
+                            {"refactor": "refactor", "critic": "critic", "presentation": "presentation"})
+    g.add_edge("critic", "supervisor")
+    g.add_conditional_edges("supervisor", route_after_supervisor,
+                            {"refactor": "refactor", "security_audit": "security_audit", "presentation": "presentation"})
     g.add_edge("presentation", END)
     return g.compile()
 

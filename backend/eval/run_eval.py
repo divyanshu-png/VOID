@@ -8,6 +8,7 @@ Dataset: JSONL, one object per program with
     id              unique id
     code            the vulnerable program (must be flagged MEDIUM/HIGH by Bandit)
     heldout_tests   optional pytest code appended to the patched program; never shown to the agent
+    heldout_security_tests  optional exploit tests (fail on the original); never shown to the agent
     cwe             optional label
 
 Outputs (in --out, default eval/results/<timestamp>/):
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,7 +41,7 @@ from app.core.sandbox import active_backend, execute_in_sandbox  # noqa: E402
 from app.graph.workflow import run_review  # noqa: E402
 from app.tools.sast_scanner import compare, run_bandit_scan  # noqa: E402
 
-MODES = {"single": "C0", "sast": "C1", "exec": "C2", "dual": "C3"}
+MODES = {"single": "C0", "sast": "C1", "exec": "C2", "dual": "C3", "auto": "C4"}
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -91,6 +93,11 @@ def evaluate_one(sample: Dict[str, Any], mode: str, max_retries: int, use_semgre
     if heldout and not error:
         fp = execute_in_sandbox(final, heldout).passed
 
+    sec_tests = sample.get("heldout_security_tests")
+    sec = None
+    if sec_tests and not error:
+        sec = execute_in_sandbox(final, sec_tests).passed
+
     sem = None
     if use_semgrep and not error:
         a, b = semgrep_ids(sample["code"]), semgrep_ids(final)
@@ -109,7 +116,8 @@ def evaluate_one(sample: Dict[str, Any], mode: str, max_retries: int, use_semgre
         "semgrep_clean": "" if sem is None else int(sem),
         "gen_pass": int(bool(last_exec.get("passed"))),
         "heldout_pass": "" if fp is None else int(fp),
-        "success": "" if fp is None else int(verdict_sast["passed"] and fp),
+        "exploit_blocked": "" if sec is None else int(sec),
+        "success": "" if fp is None else int(verdict_sast["passed"] and fp and (sec is None or sec)),
         "syntax_errors": kinds.count("syntax"),
         "runtime_errors": kinds.count("runtime") + kinds.count("timeout"),
         "first_attempt_feasible": int(bool(attempts) and kinds[0] not in ("syntax", "runtime", "timeout")),
@@ -148,6 +156,7 @@ def summarise(rows: List[Dict[str, Any]], modes: List[str], runs: int) -> Dict[s
                 "VRR": _mean([x["vrr"] for x in rs]),
                 "NIR": _mean([x["nir"] for x in rs]),
                 "FP": _mean([x["heldout_pass"] for x in rs]),
+                "EBR": _mean([x["exploit_blocked"] for x in rs]),
                 "Success": _mean([x["success"] for x in rs]),
                 "SGG": (_mean([x["gen_pass"] for x in gen]) - _mean([x["heldout_pass"] for x in gen])) if gen else None,
                 "Semgrep": _mean([x["semgrep_clean"] for x in rs]),
@@ -183,8 +192,8 @@ def summarise(rows: List[Dict[str, Any]], modes: List[str], runs: int) -> Dict[s
 
 
 def to_markdown(summary: Dict[str, Any], meta: Dict[str, Any]) -> str:
-    cols = ["VRR", "NIR", "FP", "Success", "SGG", "Semgrep", "Feasible@1", "Attempts", "Calls", "Tokens", "Seconds"]
-    pct = {"VRR", "NIR", "FP", "Success", "SGG", "Semgrep", "Feasible@1"}
+    cols = ["VRR", "NIR", "FP", "EBR", "Success", "SGG", "Semgrep", "Feasible@1", "Attempts", "Calls", "Tokens", "Seconds"]
+    pct = {"VRR", "NIR", "FP", "EBR", "Success", "SGG", "Semgrep", "Feasible@1"}
     lines = [f"# VOID evaluation - {meta['dataset']} ({meta['n']} programs x {meta['runs']} runs)", "",
              f"model: `{meta['model']}` · sandbox: `{meta['sandbox']}` · max retries: {meta['max_retries']}", "",
              "| Config | " + " | ".join(cols) + " |", "|" + "---|" * (len(cols) + 1)]
@@ -200,7 +209,8 @@ def to_markdown(summary: Dict[str, Any], meta: Dict[str, Any]) -> str:
                 cells.append(f"{v[0]:.2f}")
         lines.append(f"| {MODES[m]} ({m}) | " + " | ".join(cells) + " |")
     lines += ["", "VRR = original MEDIUM/HIGH Bandit findings removed with nothing new introduced; "
-              "NIR = new MEDIUM/HIGH finding introduced; FP = held-out tests pass; Success = VRR and FP; "
+              "NIR = new MEDIUM/HIGH finding introduced; FP = held-out tests pass; "
+              "EBR = held-out exploit tests pass (attack blocked); Success = VRR and FP and EBR; "
               "SGG = P(pass generated tests) - P(pass held-out tests); Semgrep = no overlapping Semgrep rule after repair; "
               "Feasible@1 = first attempt has no syntax/runtime error.", ""]
     if summary["mcnemar"]:
@@ -217,6 +227,7 @@ def main(argv=None) -> int:
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--max-retries", type=int, default=3)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--workers", type=int, default=1, help="reviews to run in parallel")
     ap.add_argument("--out", default=None)
     ap.add_argument("--semgrep", action="store_true", help="also check every patch with Semgrep (needs semgrep installed)")
     ap.add_argument("--stub", action="store_true", help="use the rule-based stub instead of Gemini (pipeline smoke test)")
@@ -236,19 +247,22 @@ def main(argv=None) -> int:
     out = Path(args.out) if args.out else ROOT / "eval" / "results" / time.strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
 
+    jobs = [(run, m, s) for run in range(args.runs) for m in modes for s in data]
+    total = len(jobs)
+
+    def work(job):
+        run, m, s = job
+        row = evaluate_one(s, m, args.max_retries, args.semgrep)
+        row["run"] = run
+        return row
+
     rows: List[Dict[str, Any]] = []
-    total = len(data) * len(modes) * args.runs
-    done = 0
-    for run in range(args.runs):
-        for m in modes:
-            for s in data:
-                row = evaluate_one(s, m, args.max_retries, args.semgrep)
-                row["run"] = run
-                rows.append(row)
-                done += 1
-                print(f"[{done}/{total}] run={run} {MODES[m]:<2} {s['id']:<22} verdict={row['verdict']:<11} "
-                      f"vrr={row['vrr']} heldout={row['heldout_pass']} attempts={row['attempts']} {row['error'][:60]}",
-                      flush=True)
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        for done, row in enumerate(pool.map(work, jobs), 1):
+            rows.append(row)
+            print(f"[{done}/{total}] run={row['run']} {row['config']:<2} {row['id']:<22} verdict={row['verdict']:<11} "
+                  f"vrr={row['vrr']} heldout={row['heldout_pass']} exploit={row['exploit_blocked']} attempts={row['attempts']} {row['error'][:60]}",
+                  flush=True)
 
     with open(out / "runs.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))

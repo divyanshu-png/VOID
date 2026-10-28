@@ -46,8 +46,9 @@ MAX_RETRIES = _int("MAX_RETRIES", 3)
 #   single = C0 (one repair attempt, no feedback loop)
 #   sast   = C1 (Bandit re-scan only)
 #   exec   = C2 (generated tests only)
-#   dual   = C3 (both must pass)  <- VOID default
-ORACLE_MODE = os.getenv("ORACLE_MODE", "dual")
+#   dual   = C3 (both must pass)
+#   auto   = C4 (both must pass + an LLM critic; an LLM supervisor picks each next step)  <- VOID default
+ORACLE_MODE = os.getenv("ORACLE_MODE", "auto")
 
 # --- Sandbox -----------------------------------------------------------------
 # auto  = use Docker if it is available, otherwise the hardened subprocess

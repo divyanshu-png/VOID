@@ -41,4 +41,4 @@ echo "==> Tests"
 (cd backend && SANDBOX_MODE=subprocess .venv/bin/python -m pytest -q -p no:cacheprovider | tail -1)
 
 echo
-echo "Done. Start VOID with:  ./run.sh   then open http://localhost:8000"
+echo "Done. Start VOID with:  ./run.sh   then open http://localhost:5173"

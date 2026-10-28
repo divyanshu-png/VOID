@@ -35,7 +35,7 @@ def test_stream_events(client):
         for line in resp.iter_lines():
             if line.startswith("event:"):
                 events.append(line[6:].strip())
-    assert events[0] == "start" and events[-1] == "done" and events.count("node") == 5
+    assert events[0] == "start" and events[-1] == "done" and events.count("node") == 7  # auto mode adds critic + supervisor
 
 
 def test_focus_line_merges_into_file(client):

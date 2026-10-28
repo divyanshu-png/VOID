@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-OracleMode = Literal["single", "sast", "exec", "dual"]
+OracleMode = Literal["single", "sast", "exec", "dual", "auto"]
 
 
 class AuditRequest(BaseModel):

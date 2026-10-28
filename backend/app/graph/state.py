@@ -5,7 +5,7 @@ class AgentCodeState(TypedDict, total=False):
     # input
     original_code: str
     file_language: str
-    oracle_mode: str            # single | sast | exec | dual
+    oracle_mode: str            # single | sast | exec | dual | auto
     max_retries: int
     local_modules: List[str]    # repo-local import names (skip PyPI checks)
     # deterministic pre-analysis
@@ -26,6 +26,10 @@ class AgentCodeState(TypedDict, total=False):
     test_execution_status: str       # PENDING | PASSED | FAILED
     error_logs: Optional[str]
     retry_count: int
+    # autonomous mode: the supervisor's chosen next step
+    next_action: Optional[str]       # repair_code | repair_tests | reaudit | give_up | accept
+    guidance: str                    # supervisor instructions for the next agent
+    reaudits: int
     # result
     verdict: str                     # verified | unverified | clean | invalid_input
     final_diff: Optional[str]
@@ -40,5 +44,5 @@ def initial_state(code: str, language: str = "python", oracle_mode: str = "dual"
         ast_metadata={}, static_issues=[], sast_before=[], package_report=[],
         audit={}, security_audit=[], refactored_code=None, generated_tests=None, repair_notes="",
         attempts=[], sast_oracle={}, exec_oracle={}, test_execution_status="PENDING",
-        error_logs=None, retry_count=0, verdict="", final_diff=None, usage={},
+        error_logs=None, retry_count=0, next_action=None, guidance="", reaudits=0, verdict="", final_diff=None, usage={},
     )

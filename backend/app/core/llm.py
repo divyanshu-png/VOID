@@ -43,6 +43,20 @@ class RepairResult(BaseModel):
     notes: str = Field(default="", description="One or two sentences on what changed")
 
 
+class CriticResult(BaseModel):
+    approved: bool = Field(description="True only if the patch really fixes the findings, keeps behaviour and stays in scope")
+    issues: List[str] = Field(default_factory=list, description="Concrete problems with the patch or its tests, one per item")
+    summary: str = Field(default="", description="One-sentence review")
+
+
+class SupervisorDecision(BaseModel):
+    action: Literal["repair_code", "repair_tests", "reaudit", "give_up"] = Field(
+        description="repair_code: the program is wrong; repair_tests: the program is right but the tests are wrong; "
+                    "reaudit: the findings themselves look wrong or incomplete; give_up: no realistic path to a verified fix")
+    reason: str = Field(description="Why, citing the evidence, in one or two sentences")
+    guidance: str = Field(default="", description="Concrete instructions for the next agent")
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -78,6 +92,31 @@ REPAIR_SYSTEM = (
     "Return raw Python only, never markdown fences."
 )
 
+CRITIC_SYSTEM = (
+    "You are a strict senior code reviewer approving security patches. The patch has already "
+    "passed or failed automated checks (Bandit re-scan, generated tests); you judge what those "
+    "checks cannot. Reject the patch if ANY of these hold:\n"
+    "- A finding is hidden rather than fixed (e.g. '# nosec', renaming a call so Bandit misses it, "
+    "dead code, catching and ignoring the error).\n"
+    "- Behaviour for legitimate inputs changed, or a public function/class/signature changed or was removed.\n"
+    "- Out-of-scope edits made only to satisfy the test environment: wrapping imports in try/except, "
+    "fallback or mock classes in the program, deleted features, broad except clauses.\n"
+    "- The tests are hollow: they do not exercise the vulnerability (no attack input) or only assert trivia.\n"
+    "Approve only when the fix is real, minimal and behaviour-preserving. Cite line-level evidence."
+)
+
+SUPERVISOR_SYSTEM = (
+    "You are the supervisor of an autonomous security-repair team: an auditor, a repair agent "
+    "and a test writer. The last candidate patch was rejected. Read the evidence from the SAST "
+    "re-scan, the sandboxed test run and the code critic, and decide the single best next step:\n"
+    "- repair_code: the program is still vulnerable, broken or out of scope.\n"
+    "- repair_tests: the program looks correct but the tests are wrong (bad mocks, wrong "
+    "expectations, import errors in the test code, hollow tests).\n"
+    "- reaudit: the audit findings look wrong or incomplete, so repairing against them cannot succeed.\n"
+    "- give_up: repeated attempts make no progress or the fix needs information the code does not contain.\n"
+    "Prefer the cheapest step that addresses the root cause. Give guidance the next agent can act on."
+)
+
 
 def _strip_fences(text: str) -> str:
     text = text.strip()
@@ -92,6 +131,24 @@ def audit_prompt(code: str, ast_meta: dict, static_issues: list, packages: list)
         f"Bandit SAST findings:\n{json.dumps(static_issues, default=str)[:4000]}\n\n"
         f"Package registry checks:\n{json.dumps(packages, default=str)[:2000]}\n\n"
         f"Code (line numbers are 1-based):\n" + _numbered(code)
+    )
+
+
+def critic_prompt(original: str, patched: str, tests: str, findings: list, checks: dict) -> str:
+    return (
+        "Findings the patch had to fix:\n" + json.dumps(findings, default=str, indent=1)[:4000]
+        + "\n\nAutomated checks on this patch:\n" + json.dumps(checks, default=str)[:2500]
+        + "\n\nOriginal code:\n" + _numbered(original)
+        + "\n\nPatched code:\n" + _numbered(patched)
+        + "\n\nGenerated tests:\n" + (tests or "(none)")[:6000]
+    )
+
+
+def supervisor_prompt(findings: list, history: list, budget_left: int, reaudits_left: int) -> str:
+    return (
+        f"Repair attempts left: {budget_left}. Re-audits left: {reaudits_left}.\n\n"
+        "Audit findings:\n" + json.dumps(findings, default=str, indent=1)[:3000]
+        + "\n\nAttempt history (oldest first):\n" + json.dumps(history, default=str, indent=1)[:9000]
     )
 
 
@@ -215,9 +272,22 @@ class GeminiClient:
             return RepairResult(patched_code=_strip_fences(code), tests=_strip_fences(tests))
         return None
 
-    def audit(self, code: str, ast_meta: dict, static_issues: list, packages: list) -> AuditResult:
-        res = self._structured(AuditResult, AUDIT_SYSTEM, audit_prompt(code, ast_meta, static_issues, packages))
+    def audit(self, code: str, ast_meta: dict, static_issues: list, packages: list,
+              feedback: Optional[str] = None) -> AuditResult:
+        prompt = audit_prompt(code, ast_meta, static_issues, packages)
+        if feedback:
+            prompt += "\n\nA previous audit led to failed repairs. The supervisor says:\n" + feedback[:4000]
+        res = self._structured(AuditResult, AUDIT_SYSTEM, prompt)
         return res or AuditResult(summary="Audit could not be parsed.", findings=[])
+
+    def critique(self, original: str, patched: str, tests: str, findings: list, checks: dict) -> CriticResult:
+        res = self._structured(CriticResult, CRITIC_SYSTEM, critic_prompt(original, patched, tests, findings, checks))
+        return res or CriticResult(approved=False, issues=["Critic output could not be parsed."])
+
+    def decide(self, findings: list, history: list, budget_left: int, reaudits_left: int) -> SupervisorDecision:
+        res = self._structured(SupervisorDecision, SUPERVISOR_SYSTEM,
+                               supervisor_prompt(findings, history, budget_left, reaudits_left))
+        return res or SupervisorDecision(action="repair_code", reason="Supervisor output could not be parsed.")
 
     def repair(self, code: str, findings: list, feedback: Optional[str]) -> RepairResult:
         res = self._structured(RepairResult, REPAIR_SYSTEM, repair_prompt(code, findings, feedback))

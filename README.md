@@ -34,7 +34,7 @@ What's in the repo:
 
 ## 1. Quick start (macOS / Linux)
 
-Easiest: `./setup.sh` once (put your key in `backend/.env`), then `./run.sh` and open http://localhost:8000. The manual steps are below.
+Easiest: `./setup.sh` once (put your key in `backend/.env`), then `cd frontend && npm run dev` (or `./run.sh`) and open http://localhost:5173; it starts the backend on :8000 too. The manual steps are below.
 
 ```bash
 # backend
@@ -58,7 +58,7 @@ Open **http://localhost:8000**. The header shows which model and which sandbox a
 * No Docker? VOID falls back to a hardened subprocess (scrubbed environment, CPU/memory limits, timeout). The header shows `sandbox: subprocess`.
 * No API key yet? Start with `VOID_STUB_LLM=1 uvicorn app.main:app` to click through the UI with a rule-based stub. **The stub is not an AI**; never present its output as results.
 
-For frontend development with hot reload: `cd frontend && npm run dev` (http://localhost:5173, proxies to :8000).
+`npm run dev` also starts the backend unless one is already running on :8000.
 
 ## 2. The web dashboard
 

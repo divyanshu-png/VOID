@@ -17,7 +17,7 @@ export function Pipeline({ run }: { run: RunState }) {
 }
 
 const VERDICT_COPY: Record<string, [string, string]> = {
-  verified: ["VERIFIED", "The patch removed the flagged weaknesses and passed its tests. Both oracles agree."],
+  verified: ["VERIFIED", "The patch removed the flagged weaknesses and passed its tests. Every check agrees."],
   unverified: ["UNVERIFIED", "The best patch is shown, but at least one oracle still rejects it. Review before using."],
   clean: ["CLEAN", "No exploitable issues were found, so no patch was needed."],
   invalid_input: ["INVALID INPUT", "The code does not parse, so it was not reviewed."],
@@ -64,6 +64,9 @@ export function Verdict({ run }: { run: RunState }) {
 function runningText(run: RunState): string {
   if (run.stages.ast_parser === "active") return "Parsing the code, running Bandit and checking packages on PyPI…";
   if (run.stages.security_audit === "active") return "The auditor is reviewing the code against the OWASP Top 10…";
+  const last = run.attempts[run.attempts.length - 1];
+  if (run.stages.sandbox === "active" && last?.exec && !last.critic) return `The critic agent is reviewing attempt ${run.attempts.length}…`;
+  if (run.stages.sandbox === "active" && last?.critic) return "The supervisor agent is choosing the next step…";
   if (run.stages.sandbox === "active") return `Verifying attempt ${run.attempts.length}: Bandit re-scan + sandboxed tests…`;
   if (run.stages.refactor === "active")
     return run.attempts.length ? `Attempt ${run.attempts.length} was rejected; repairing again with the feedback…` : "Writing a patch and tests…";
@@ -154,6 +157,7 @@ function OracleBadges({ a }: { a: Attempt }) {
     <>
       <span className={`badge ${a.sast.passed ? "good" : "bad"}`}>SAST · {sastLabel}</span>
       <span className={`badge ${a.exec.passed ? "good" : "bad"}`}>EXEC · {execLabel}</span>
+      {a.critic && <span className={`badge ${a.critic.approved ? "good" : "bad"}`}>CRITIC · {a.critic.approved ? "approved" : "rejected"}</span>}
       {a.exec.backend && <span className="tiny muted">{a.exec.backend}</span>}
     </>
   );
@@ -175,7 +179,18 @@ export function Attempts({ run }: { run: RunState }) {
                 <span className={`badge ${a.accepted ? "good" : "warn"}`}>{a.accepted ? "ACCEPTED" : "REJECTED"}</span>
               )}
             </div>
+            {a.action === "repair_tests" && <p className="tiny muted" style={{ margin: "6px 0 0" }}>Tests rewritten, code kept</p>}
             {a.notes && <p className="small muted" style={{ margin: "6px 0 0" }}>{a.notes}</p>}
+            {a.critic && !a.critic.approved && a.critic.issues.length > 0 && (
+              <ul className="small" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {a.critic.issues.map((i, k) => <li key={k}>{i}</li>)}
+              </ul>
+            )}
+            {a.decision && (
+              <p className="small" style={{ margin: "6px 0 0" }}>
+                <b>Supervisor → {a.decision.action.replace("_", " ")}</b>: {a.decision.reason}
+              </p>
+            )}
             {a.feedback && (
               <details>
                 <summary>Feedback sent back to the repair agent</summary>

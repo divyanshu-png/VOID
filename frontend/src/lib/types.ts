@@ -1,10 +1,11 @@
-export type OracleMode = "single" | "sast" | "exec" | "dual";
+export type OracleMode = "single" | "sast" | "exec" | "dual" | "auto";
 
 export const MODES: { id: OracleMode; code: string; label: string; hint: string }[] = [
   { id: "single", code: "C0", label: "Single prompt", hint: "One repair attempt, no feedback loop" },
   { id: "sast", code: "C1", label: "SAST only", hint: "Retry until the Bandit re-scan is clean" },
   { id: "exec", code: "C2", label: "Tests only", hint: "Retry until generated tests pass" },
-  { id: "dual", code: "C3", label: "Dual oracle", hint: "Both must pass: VOID's default" },
+  { id: "dual", code: "C3", label: "Dual oracle", hint: "Both must pass" },
+  { id: "auto", code: "C4", label: "Autonomous", hint: "Both oracles + a critic agent; a supervisor agent picks each next step: VOID's default" },
 ];
 
 export interface BanditFinding {
@@ -67,6 +68,9 @@ export interface Attempt {
   sast?: SastOracle;
   accepted?: boolean;
   feedback?: string;
+  action?: string;
+  critic?: { approved: boolean; issues: string[]; summary?: string };
+  decision?: { action: string; reason: string; guidance?: string };
 }
 
 export type StageId = "ast_parser" | "security_audit" | "refactor" | "sandbox" | "presentation";

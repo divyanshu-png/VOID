@@ -25,11 +25,17 @@ export default function App() {
         })
         .catch(() => setHealthErr(true));
     load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    // Only the visible tab polls, so several open tabs don't flood the backend.
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 30000);
+    const onShow = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onShow);
+    };
   }, []);
 
-  const mode: OracleMode = health?.oracle_mode || "dual";
+  const mode: OracleMode = health?.oracle_mode || "auto";
   return (
     <>
       <div className="bg-ring a" />
