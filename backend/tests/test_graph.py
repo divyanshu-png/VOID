@@ -182,3 +182,19 @@ def test_stream_emits_every_stage():
 def test_invalid_input_short_circuits():
     state = run_review("def broken(:\n", llm=FakeLLM([]))
     assert state["verdict"] == "invalid_input"
+
+
+def test_sandbox_stubs_missing_third_party_modules():
+    code = "import streamlit as st\nimport totally_missing_pkg_xyz\n\ndef show(x):\n    st.error(x)\n    return x\n"
+    r = execute_in_sandbox(code, "def test_show():\n    assert show(3) == 3\n")
+    assert r.passed, r.logs
+
+
+def test_merge_carries_module_level_helpers():
+    f = "import requests\n\ndef fetch(u):\n    return requests.get(u)\n"
+    info = extract_enclosing(f, 4)
+    patched = ("import requests\nimport logging\nlogger = logging.getLogger(__name__)\n\n"
+               "def fetch(u):\n    logger.info(u)\n    return requests.get(u, timeout=5)\n")
+    merged = merge_patch_into_file(f, info, patched)
+    assert "logger = logging.getLogger(__name__)" in merged and "import logging" in merged
+    compile(merged, "m.py", "exec")

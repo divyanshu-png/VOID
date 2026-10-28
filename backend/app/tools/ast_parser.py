@@ -110,6 +110,20 @@ def merge_patch_into_file(file_code: str, info: Dict[str, Any], patched_snippet:
     new_imports = [ast.get_source_segment(patched_snippet, n) for n in ptree.body
                    if isinstance(n, (ast.Import, ast.ImportFrom))
                    and ast.get_source_segment(patched_snippet, n) not in existing]
+    # Module-level names the patched block relies on but the file lacks (e.g. `logger = ...`).
+    defined = set()
+    for n in ftree.body:
+        for t in getattr(n, "targets", []) or ([n.target] if isinstance(n, ast.AnnAssign) else []):
+            if isinstance(t, ast.Name):
+                defined.add(t.id)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(n.name)
+    used = {x.id for x in ast.walk(ast.parse("\n".join(block))) if isinstance(x, ast.Name)} if block else set()
+    for n in ptree.body:
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+            name = n.targets[0].id
+            if name in used and name not in defined:
+                new_imports.append(ast.get_source_segment(patched_snippet, n))
 
     out = flines[: info["start_line"] - 1] + block + flines[info["end_line"]:]
     if new_imports:

@@ -68,6 +68,53 @@ def active_backend() -> str:
     return "docker" if docker_available() else "subprocess"
 
 
+CONFTEST = """# Written by VOID: third-party modules that are not installed in the sandbox are
+# replaced with MagicMock modules, so programs keep their real imports and tests can
+# still run. Real modules always win (this finder is consulted last).
+import importlib.abc, importlib.machinery, sys
+from unittest import mock
+
+_NAMES = set(%r)
+STUBBED = []
+
+class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in _NAMES:
+            return importlib.machinery.ModuleSpec(name, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        m = mock.MagicMock(name=spec.name)
+        m.__path__ = []
+        m.__spec__ = spec
+        m.__name__ = spec.name
+        STUBBED.append(spec.name)
+        return m
+
+    def exec_module(self, module):
+        pass
+
+sys.meta_path.append(_StubFinder())
+"""
+
+
+def _third_party_roots(source: str) -> list:
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    std = set(getattr(sys, "stdlib_module_names", ()))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            roots.add(node.module.split(".")[0])
+    return sorted(r for r in roots if r not in std and r not in ("pytest", "__future__"))
+
+
 def _compose(code: str, tests: str) -> str:
     return f"{code}\n\n# ---- generated tests ----\n{tests}\n"
 
@@ -198,6 +245,11 @@ def execute_in_sandbox(code: str, tests: str, timeout: Optional[int] = None) -> 
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(source)
         os.chmod(path, 0o644)
+        stub_roots = _third_party_roots(source)
+        conftest = os.path.join(workdir, "conftest.py")
+        with open(conftest, "w", encoding="utf-8") as fh:
+            fh.write(CONFTEST % (stub_roots,))
+        os.chmod(conftest, 0o644)
         runner = _run_docker if backend == "docker" else _run_subprocess
         code_rc, output, timed_out = runner(workdir, timeout)
 
@@ -210,4 +262,5 @@ def execute_in_sandbox(code: str, tests: str, timeout: Optional[int] = None) -> 
         return ExecResult(False, "error", "runtime", output, backend, duration)
 
     status, kind = classify(code_rc, output)
-    return ExecResult(status == "passed", status, kind, output[-6000:], backend, duration, _collected(output))
+    return ExecResult(status == "passed", status, kind, output[-6000:], backend, duration, _collected(output),
+                      {"stub_candidates": stub_roots})
