@@ -159,7 +159,7 @@ Datasets (JSONL): `{"id", "cwe", "code", "heldout_tests", "heldout_security_test
 ## 6. Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q     # 29 tests, offline, no API key needed
+cd backend && .venv/bin/python -m pytest -q     # 30 tests, offline, no API key needed
 ```
 
 They cover the tools, the sandbox (failure classification, secret scrubbing, timeouts, module stubbing), all five modes (including C2 being fooled by trivial self-written tests, the critic vetoing a patch both oracles accept, tests-only rewrites, re-audit and give-up), streaming and the API.

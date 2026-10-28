@@ -264,3 +264,16 @@ def test_merge_carries_module_level_helpers():
     merged = merge_patch_into_file(f, info, patched)
     assert "logger = logging.getLogger(__name__)" in merged and "import logging" in merged
     compile(merged, "m.py", "exec")
+
+
+def test_merge_carries_helper_functions_and_their_constants():
+    """Regression: a focused fix that adds a helper (and a constant the helper uses) must bring both along."""
+    f = "import subprocess\n\ndef ping(host):\n    return subprocess.check_output(['ping', host])\n"
+    patched = ("import re\nimport subprocess\n\nHOST_RE = re.compile(r'^[a-z0-9.-]+$')\nUNUSED = 1\n\n"
+               "def _valid(h):\n    return bool(HOST_RE.match(h))\n\n"
+               "def ping(host):\n    if not _valid(host):\n        raise ValueError(host)\n"
+               "    return subprocess.check_output(['ping', '--', host])\n")
+    merged = merge_patch_into_file(f, extract_enclosing(f, 4), patched)
+    ns = {}
+    exec(compile(merged, "m.py", "exec"), ns)
+    assert ns["_valid"]("example.com") and "HOST_RE" in ns and "UNUSED" not in ns

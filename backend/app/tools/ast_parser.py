@@ -96,40 +96,56 @@ def merge_patch_into_file(file_code: str, info: Dict[str, Any], patched_snippet:
     except SyntaxError:
         return file_code
     plines = patched_snippet.splitlines()
-    block = None
-    for node in ptree.body:
-        if getattr(node, "name", None) == info["name"]:
-            start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
-            block = plines[start - 1: node.end_lineno]
-            break
-    if block is None:
+
+    def lines_of(node) -> List[str]:
+        start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        return plines[start - 1: node.end_lineno]
+
+    target = next((n for n in ptree.body if getattr(n, "name", None) == info["name"]), None)
+    if target is None:
         return file_code
+    block = lines_of(target)
 
     flines = file_code.splitlines()
     existing = {ast.get_source_segment(file_code, n) for n in ftree.body if isinstance(n, (ast.Import, ast.ImportFrom))}
     new_imports = [ast.get_source_segment(patched_snippet, n) for n in ptree.body
                    if isinstance(n, (ast.Import, ast.ImportFrom))
                    and ast.get_source_segment(patched_snippet, n) not in existing]
-    # Module-level names the patched block relies on but the file lacks (e.g. `logger = ...`).
-    defined = set()
-    for n in ftree.body:
-        for t in getattr(n, "targets", []) or ([n.target] if isinstance(n, ast.AnnAssign) else []):
-            if isinstance(t, ast.Name):
-                defined.add(t.id)
+
+    # Module-level definitions the patched block needs but the file lacks: constants
+    # (`logger = ...`), helper functions and classes, followed transitively, so a
+    # helper's own constants come along too.
+    def defines(n) -> List[str]:
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            defined.add(n.name)
-    used = {x.id for x in ast.walk(ast.parse("\n".join(block))) if isinstance(x, ast.Name)} if block else set()
-    for n in ptree.body:
-        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
-            name = n.targets[0].id
-            if name in used and name not in defined:
-                new_imports.append(ast.get_source_segment(patched_snippet, n))
+            return [n.name]
+        targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        return [t.id for t in targets if isinstance(t, ast.Name)]
+
+    defined = {name for n in ftree.body for name in defines(n)}
+    helpers = {name: n for n in ptree.body if n is not target for name in defines(n)}
+    needed, seen = set(), set()
+    todo = [x.id for x in ast.walk(target) if isinstance(x, ast.Name)]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        node = helpers.get(name)
+        if node is not None and name not in defined:
+            needed.add(id(node))
+            todo += [x.id for x in ast.walk(node) if isinstance(x, ast.Name)]
+    carried = [lines_of(n) for n in ptree.body if id(n) in needed]
 
     out = flines[: info["start_line"] - 1] + block + flines[info["end_line"]:]
-    if new_imports:
+    insert = list(new_imports)
+    for lines in carried:
+        insert += [""] + lines
+    if carried:
+        insert.append("")
+    if insert:
         last_import = 0
         for n in ftree.body:
             if isinstance(n, (ast.Import, ast.ImportFrom)):
                 last_import = n.end_lineno
-        out = out[:last_import] + new_imports + out[last_import:]
+        out = out[:last_import] + insert + out[last_import:]
     return "\n".join(out) + ("\n" if file_code.endswith("\n") else "")
