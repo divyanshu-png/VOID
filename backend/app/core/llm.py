@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import List, Literal, Optional
@@ -111,27 +112,51 @@ def _numbered(code: str) -> str:
 class GeminiClient:
     """Thin wrapper around langchain-google-genai with usage accounting."""
 
-    def __init__(self, model: Optional[str] = None, temperature: Optional[float] = None):
-        from langchain_google_genai import ChatGoogleGenerativeAI
+    # Endpoint that worked last, shared across clients so the probe happens once per server run.
+    _endpoint: Optional[bool] = None
 
+    def __init__(self, model: Optional[str] = None, temperature: Optional[float] = None):
         self.model_name = model or config.GEMINI_MODEL
-        self._llm = ChatGoogleGenerativeAI(
-            model=self.model_name,
-            google_api_key=config.require_api_key(),
-            temperature=config.LLM_TEMPERATURE if temperature is None else temperature,
-            vertexai=config.USE_VERTEXAI,
-        )
+        self._temperature = config.LLM_TEMPERATURE if temperature is None else temperature
+        self._key = config.require_api_key()
+        vertex = GeminiClient._endpoint if GeminiClient._endpoint is not None else config.USE_VERTEXAI
+        self._llm = self._make(vertex)
+        self._vertex = vertex
         self.calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
         self.seconds = 0.0
 
+    def _make(self, vertex: bool):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(model=self.model_name, google_api_key=self._key,
+                                      temperature=self._temperature, vertexai=vertex)
+
+    def _invoke(self, schema, messages):
+        try:
+            out = self._llm.with_structured_output(schema, include_raw=True).invoke(messages)
+            GeminiClient._endpoint = self._vertex
+            return out
+        except Exception as exc:
+            text = str(exc)
+            # A key restricted to the other Google endpoint: switch once, unless the
+            # user forced an endpoint with GOOGLE_GENAI_USE_VERTEXAI.
+            wrong_endpoint = any(s in text for s in ("API_KEY_SERVICE_BLOCKED", "API key not valid",
+                                                     "API_KEY_INVALID", "SERVICE_DISABLED"))
+            if wrong_endpoint and GeminiClient._endpoint is None and os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "auto") == "auto":
+                self._vertex = not self._vertex
+                self._llm = self._make(self._vertex)
+                out = self._llm.with_structured_output(schema, include_raw=True).invoke(messages)
+                GeminiClient._endpoint = self._vertex
+                return out
+            raise
+
     def _structured(self, schema, system: str, user: str):
         from langchain_core.messages import HumanMessage, SystemMessage
 
         started = time.time()
-        runnable = self._llm.with_structured_output(schema, include_raw=True)
-        out = runnable.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        out = self._invoke(schema, [SystemMessage(content=system), HumanMessage(content=user)])
         self.seconds += time.time() - started
         self.calls += 1
         raw = out.get("raw")
@@ -178,6 +203,7 @@ class GeminiClient:
             "output_tokens": self.output_tokens,
             "llm_seconds": round(self.seconds, 2),
             "model": self.model_name,
+            "endpoint": "vertex-ai" if self._vertex else "gemini-api",
         }
 
 
