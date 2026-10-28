@@ -34,6 +34,8 @@ What's in the repo:
 
 ## 1. Quick start (macOS / Linux)
 
+Easiest: `./setup.sh` once (put your key in `backend/.env`), then `./run.sh` and open http://localhost:8000. The manual steps are below.
+
 ```bash
 # backend
 cd backend
