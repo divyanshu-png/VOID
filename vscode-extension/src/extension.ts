@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { auditStream, backendUrl, health, scan, type AuditResult, type ScanResult } from "./client";
+import { auditStream, backendUrl, dashboardUrl, health, scan, type AuditResult, type ScanResult } from "./client";
 
 const SOURCE = "VOID";
 const SCHEME = "void-patch";
@@ -29,7 +29,7 @@ export function activate(context: vscode.ExtensionContext) {
       const doc = vscode.window.activeTextEditor?.document;
       if (doc) runScan(doc, true);
     }),
-    vscode.commands.registerCommand("void.openDashboard", () => vscode.env.openExternal(vscode.Uri.parse(backendUrl() + "/"))),
+    vscode.commands.registerCommand("void.openDashboard", () => vscode.env.openExternal(vscode.Uri.parse(dashboardUrl() + "/"))),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       if (doc.languageId === "python" && vscode.workspace.getConfiguration("void").get("scanOnSave")) runScan(doc, false);
     }),
@@ -53,7 +53,7 @@ async function refreshStatus() {
   const h = await health();
   if (!h) {
     status.text = "$(circle-slash) VOID offline";
-    status.tooltip = `No VOID backend at ${backendUrl()}. Start it with: cd backend && uvicorn app.main:app`;
+    status.tooltip = `No VOID backend at ${backendUrl()}. Start it with: cd frontend && npm run dev`;
   } else {
     const llm = h.stub_llm ? "stub LLM" : h.api_key_configured ? h.model : "no API key";
     status.text = "$(shield) VOID";
@@ -209,5 +209,5 @@ function log(doc: vscode.TextDocument, r: AuditResult) {
     output.appendLine(
       `  attempt ${a.n}: bandit ${a.sast.passed ? "clean" : `${a.sast.remaining.length} left / ${a.sast.introduced.length} new`} · tests ${a.exec.status}${a.exec.error_kind ? ` (${a.exec.error_kind})` : ""} → ${a.accepted ? "ACCEPTED" : "rejected"}`,
     );
-  if (r.replay_id) output.appendLine(`replay: ${backendUrl()}/#replays (id ${r.replay_id})`);
+  if (r.replay_id) output.appendLine(`replay: ${dashboardUrl()}/#replays (id ${r.replay_id})`);
 }

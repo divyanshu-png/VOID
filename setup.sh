@@ -25,16 +25,20 @@ fi
 
 echo "==> Sandbox image"
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
-  docker build -q -t void-sandbox:latest ./sandbox >/dev/null && echo "    built void-sandbox:latest (tests will run in throwaway containers)"
+  docker build -q -t void-sandbox:latest ./sandbox >/dev/null && echo "    built void-sandbox:latest (tests run in one reused, locked-down container)"
 else
   echo "    Docker not running; VOID will use the subprocess fallback. Start Docker Desktop and re-run ./setup.sh to enable containers."
 fi
 
 echo "==> VS Code extension"
-if command -v code >/dev/null; then
-  code --install-extension vscode-extension/void-0.2.0.vsix --force >/dev/null && echo "    installed VOID extension"
-else
-  echo "    'code' command not found. In VS Code: Extensions > ... > Install from VSIX > vscode-extension/void-0.2.0.vsix"
+if command -v npm >/dev/null; then
+  (cd vscode-extension && npm install --no-audit --no-fund --silent && npm run package --silent >/dev/null \
+    && npx vsce package --skip-license >/dev/null) && echo "    built vscode-extension/void-0.2.0.vsix"
+  if command -v code >/dev/null; then
+    code --install-extension vscode-extension/void-0.2.0.vsix --force >/dev/null && echo "    installed VOID extension"
+  else
+    echo "    'code' command not found. In VS Code: Extensions > ... > Install from VSIX > vscode-extension/void-0.2.0.vsix"
+  fi
 fi
 
 echo "==> Tests"

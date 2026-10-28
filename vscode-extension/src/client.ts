@@ -43,9 +43,13 @@ function cfg() {
   const c = vscode.workspace.getConfiguration("void");
   return {
     url: (c.get<string>("backendUrl") || "http://localhost:8000").replace(/\/$/, ""),
-    mode: c.get<string>("oracleMode") || "dual",
+    mode: c.get<string>("oracleMode") || "auto",
     timeout: (c.get<number>("timeoutSeconds") || 300) * 1000,
   };
+}
+
+export function dashboardUrl() {
+  return (vscode.workspace.getConfiguration("void").get<string>("dashboardUrl") || "http://localhost:5173").replace(/\/$/, "");
 }
 
 export function backendUrl() {

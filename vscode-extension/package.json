@@ -60,16 +60,28 @@
           "default": "http://localhost:8000",
           "description": "URL of the VOID backend."
         },
+        "void.dashboardUrl": {
+          "type": "string",
+          "default": "http://localhost:5173",
+          "description": "URL of the VOID web dashboard (npm run dev serves it on :5173)."
+        },
         "void.oracleMode": {
           "type": "string",
-          "enum": ["dual", "exec", "sast", "single"],
+          "enum": [
+            "auto",
+            "dual",
+            "exec",
+            "sast",
+            "single"
+          ],
           "enumDescriptions": [
-            "C3: accept a patch only when the Bandit re-scan AND the generated tests pass (recommended)",
+            "C4: autonomous: both oracles + a critic agent must pass; a supervisor agent picks each next step (recommended)",
+            "C3: accept a patch only when the Bandit re-scan AND the generated tests pass",
             "C2: generated tests only",
             "C1: Bandit re-scan only",
             "C0: one attempt, no feedback loop"
           ],
-          "default": "dual",
+          "default": "auto",
           "description": "Which oracles must pass before a patch is accepted."
         },
         "void.scanOnSave": {
