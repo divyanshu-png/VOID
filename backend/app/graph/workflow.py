@@ -1,131 +1,85 @@
-import difflib
-from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage
+"""LangGraph assembly.
 
-from app.core.config import GEMINI_API_KEY, GEMINI_MODEL
-from app.graph.state import AgentCodeState
-from app.tools.ast_parser import parse_code_structure
-from app.tools.sast_scanner import run_bandit_scan
-from app.tools.pypi_validator import verify_packages
-from app.core.sandbox import execute_in_sandbox
+    precheck -> security_audit -> refactor -> sandbox --(rejected & retries left)--> refactor
+                                                       \\--(accepted / budget spent)--> presentation
 
-import logging
+Autonomous mode (auto) adds two agents after the sandbox:
+    sandbox -> critic -> supervisor --repair_code / repair_tests--> refactor
+                                    --reaudit--> security_audit
+                                    --accept / give_up--> presentation
+"""
+from __future__ import annotations
 
-# Suppress AFC informational notices from the Google GenAI SDK
-logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+from typing import Any, Dict, Iterator, Optional, Tuple
 
-llm = ChatGoogleGenerativeAI(
-    model=GEMINI_MODEL,
-    google_api_key=GEMINI_API_KEY,
-    temperature=0.1
+from langgraph.graph import END, StateGraph
+
+from app.core import config as settings
+from app.graph.nodes import (
+    MODES, audit_node, critic_node, precheck_node, presentation_node, refactor_node, route_after_audit,
+    route_after_precheck, route_after_sandbox, route_after_supervisor, sandbox_verification_node, supervisor_node,
 )
+from app.graph.state import AgentCodeState, initial_state
 
-def parse_ast_node(state: AgentCodeState) -> AgentCodeState:
-    code = state["original_code"]
-    ast_info = parse_code_structure(code)
-    state["ast_metadata"] = ast_info
-    
-    # Deterministic SAST & Package Registry checks
-    static_issues = run_bandit_scan(code)
-    suspicious_pkgs = verify_packages(ast_info.get("imports", []))
-    state["static_issues"] = static_issues + suspicious_pkgs
-    return state
+NODE_ORDER = ["ast_parser", "security_audit", "refactor", "sandbox", "critic", "supervisor", "presentation"]
 
-def security_audit_node(state: AgentCodeState) -> AgentCodeState:
-    prompt = f"""
-    Review this Python code for OWASP Top 10 vulnerabilities, bad practices, and security flaws.
-    AST Discovered Imports: {state['ast_metadata'].get('imports', [])}
-    Deterministic Scanner Alerts: {state.get('static_issues', [])}
 
-    Code:
-    ```python
-    {state['original_code']}
-    ```
-    Return a bulleted list describing each flaw, its security risk, and the necessary fix.
-    """
-    response = llm.invoke([
-        SystemMessage(content="You are a senior Application Security Engineer specializing in vulnerability analysis."),
-        HumanMessage(content=prompt)
-    ])
-    state["security_audit"] = [{"issue": response.content}]
-    return state
+def build_graph():
+    g = StateGraph(AgentCodeState)
+    g.add_node("ast_parser", precheck_node)
+    g.add_node("security_audit", audit_node)
+    g.add_node("refactor", refactor_node)
+    g.add_node("sandbox", sandbox_verification_node)
+    g.add_node("critic", critic_node)
+    g.add_node("supervisor", supervisor_node)
+    g.add_node("presentation", presentation_node)
 
-def refactor_node(state: AgentCodeState) -> AgentCodeState:
-    error_context = (
-        f"\nCRITICAL: The previous patch failed tests with:\n{state.get('error_logs')}\nEnsure this issue is fixed."
-        if state.get("error_logs") else ""
-    )
+    g.set_entry_point("ast_parser")
+    g.add_conditional_edges("ast_parser", route_after_precheck,
+                            {"security_audit": "security_audit", "presentation": "presentation"})
+    g.add_conditional_edges("security_audit", route_after_audit,
+                            {"refactor": "refactor", "presentation": "presentation"})
+    g.add_edge("refactor", "sandbox")
+    g.add_conditional_edges("sandbox", route_after_sandbox,
+                            {"refactor": "refactor", "critic": "critic", "presentation": "presentation"})
+    g.add_edge("critic", "supervisor")
+    g.add_conditional_edges("supervisor", route_after_supervisor,
+                            {"refactor": "refactor", "security_audit": "security_audit", "presentation": "presentation"})
+    g.add_edge("presentation", END)
+    return g.compile()
 
-    prompt = f"""
-    Refactor the following code to fix all identified security vulnerabilities while preserving original business logic.
-    Also generate a companion pytest test suite validating the refactored code.
-    {error_context}
 
-    Original Code:
-    {state['original_code']}
+agent_graph = build_graph()
 
-    Audit Findings:
-    {state['security_audit']}
 
-    Output format instructions:
-    Separate the refactored code and the test suite using:
-    ---TEST_SPLIT---
-    Do not use markdown code block syntax (```python or ```). Output raw Python code only.
-    Section 1: Refactored Code
-    Section 2: Pytest Suite
-    """
-    response = llm.invoke([
-        SystemMessage(content="You are an autonomous code refactoring engine. Return only clean executable Python code."),
-        HumanMessage(content=prompt)
-    ])
+def _cfg(llm) -> Dict[str, Any]:
+    # One client per run, so usage counters (calls, tokens) cover the whole review.
+    if llm is None:
+        from app.core.llm import get_llm
+        llm = get_llm()
+    return {"recursion_limit": 50, "configurable": {"llm": llm}}
 
-    raw_text = response.content.replace("```python", "").replace("```", "").strip()
-    parts = raw_text.split("---TEST_SPLIT---")
 
-    state["refactored_code"] = parts[0].strip()
-    state["generated_tests"] = parts[1].strip() if len(parts) > 1 else ""
-    state["retry_count"] = state.get("retry_count", 0) + 1
-    return state
+def _check_mode(mode: str) -> str:
+    if mode not in MODES:
+        raise ValueError(f"oracle_mode must be one of {MODES}")
+    return mode
 
-def sandbox_verification_node(state: AgentCodeState) -> AgentCodeState:
-    refactored = state.get("refactored_code", "")
-    tests = state.get("generated_tests", "")
 
-    passed, error_output = execute_in_sandbox(refactored, tests)
-    state["test_execution_status"] = "PASSED" if passed else "FAILED"
-    state["error_logs"] = error_output
-    return state
+def run_review(code: str, language: str = "python", oracle_mode: Optional[str] = None,
+               max_retries: Optional[int] = None, llm=None, local_modules=None) -> AgentCodeState:
+    mode = _check_mode(oracle_mode or settings.ORACLE_MODE)
+    state = initial_state(code, language, mode, max_retries or settings.MAX_RETRIES, local_modules)
+    return agent_graph.invoke(state, _cfg(llm))
 
-def presentation_node(state: AgentCodeState) -> AgentCodeState:
-    orig = state["original_code"].splitlines(keepends=True)
-    refactored_text = state.get("refactored_code") or state["original_code"]
-    refactored = refactored_text.splitlines(keepends=True)
-    diff = difflib.unified_diff(orig, refactored, fromfile="original.py", tofile="refactored.py")
-    state["final_diff"] = "".join(diff)
-    return state
 
-def route_after_sandbox(state: AgentCodeState) -> str:
-    if state["test_execution_status"] == "PASSED" or state["retry_count"] >= 3:
-        return "presentation"
-    return "refactor"
-
-# Construct graph
-workflow = StateGraph(AgentCodeState)
-workflow.add_node("ast_parser", parse_ast_node)
-workflow.add_node("security_audit", security_audit_node)
-workflow.add_node("refactor", refactor_node)
-workflow.add_node("sandbox", sandbox_verification_node)
-workflow.add_node("presentation", presentation_node)
-
-workflow.set_entry_point("ast_parser")
-workflow.add_edge("ast_parser", "security_audit")
-workflow.add_edge("security_audit", "refactor")
-workflow.add_edge("refactor", "sandbox")
-workflow.add_conditional_edges("sandbox", route_after_sandbox, {
-    "presentation": "presentation",
-    "refactor": "refactor"
-})
-workflow.add_edge("presentation", END)
-
-agent_graph = workflow.compile()
+def stream_review(code: str, language: str = "python", oracle_mode: Optional[str] = None,
+                  max_retries: Optional[int] = None, llm=None, local_modules=None) -> Iterator[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """Yield (node_name, node_update, merged_state) after every node."""
+    mode = _check_mode(oracle_mode or settings.ORACLE_MODE)
+    state: Dict[str, Any] = dict(initial_state(code, language, mode, max_retries or settings.MAX_RETRIES, local_modules))
+    for chunk in agent_graph.stream(state, _cfg(llm), stream_mode="updates"):
+        for node, update in chunk.items():
+            update = update or {}
+            state.update(update)
+            yield node, update, state

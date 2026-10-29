@@ -1,33 +1,325 @@
-import subprocess
-import tempfile
+"""Execution oracle: runs candidate code + tests in isolation.
+
+Two backends:
+  * docker      - one long-lived container (void-sandbox-pool), reused by every run:
+                  no network, no secrets, capped CPU / memory / processes, read-only
+                  filesystem, non-root. Each run gets its own scratch directory in
+                  the container's tmpfs, deleted when the run ends.
+  * subprocess  - development fallback when Docker is not available: separate
+                  process with a scrubbed environment (no API keys), CPU/memory
+                  rlimits and a hard timeout. NOT a security boundary.
+"""
+from __future__ import annotations
+
+import json
 import os
+import re
+import shutil
+import subprocess
 import sys
-from typing import Tuple, Optional
+import tempfile
+import threading
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from typing import Optional
 
-def execute_in_sandbox(refactored_code: str, test_code: str, timeout_seconds: int = 6) -> Tuple[bool, Optional[str]]:
-    """
-    Writes candidate code and companion tests to a temporary file,
-    executes pytest in an isolated subprocess, and enforces a strict timeout.
-    """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        test_file_path = os.path.join(temp_dir, "test_candidate.py")
-        full_content = f"{refactored_code}\n\n{test_code}"
+from app.core import config
 
-        with open(test_file_path, "w", encoding="utf-8") as f:
-            f.write(full_content)
+_DOCKER_OK: Optional[bool] = None
 
+
+@dataclass
+class ExecResult:
+    passed: bool
+    status: str  # passed | failed | no_tests | timeout | error
+    error_kind: Optional[str] = None  # syntax | runtime | assertion | timeout | None
+    logs: str = ""
+    backend: str = "subprocess"
+    duration_s: float = 0.0
+    tests_collected: int = 0
+    extra: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def docker_available() -> bool:
+    """True if the docker CLI exists, the daemon answers and the sandbox image is built."""
+    global _DOCKER_OK
+    if _DOCKER_OK is not None:
+        return _DOCKER_OK
+    if not shutil.which("docker"):
+        _DOCKER_OK = False
+        return False
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", config.SANDBOX_IMAGE],
+            capture_output=True, text=True, timeout=8,
+        )
+        _DOCKER_OK = r.returncode == 0
+    except Exception:
+        _DOCKER_OK = False
+    return _DOCKER_OK
+
+
+def active_backend() -> str:
+    mode = config.SANDBOX_MODE
+    if mode == "docker":
+        return "docker"
+    if mode == "subprocess":
+        return "subprocess"
+    return "docker" if docker_available() else "subprocess"
+
+
+CONFTEST = """# Written by VOID: third-party modules that are not installed in the sandbox are
+# replaced with MagicMock modules, so programs keep their real imports and tests can
+# still run. Real modules always win (this finder is consulted last).
+import importlib.abc, importlib.machinery, sys
+from unittest import mock
+
+_NAMES = set(%r)
+STUBBED = []
+
+class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in _NAMES:
+            return importlib.machinery.ModuleSpec(name, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        m = mock.MagicMock(name=spec.name)
+        m.__path__ = []
+        m.__spec__ = spec
+        m.__name__ = spec.name
+        STUBBED.append(spec.name)
+        return m
+
+    def exec_module(self, module):
+        pass
+
+sys.meta_path.append(_StubFinder())
+"""
+
+
+def _third_party_roots(source: str) -> list:
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    std = set(getattr(sys, "stdlib_module_names", ()))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            roots.add(node.module.split(".")[0])
+    return sorted(r for r in roots if r not in std and r not in ("pytest", "__future__"))
+
+
+def _compose(code: str, tests: str) -> str:
+    return f"{code}\n\n# ---- generated tests ----\n{tests}\n"
+
+
+def classify(exit_code: int, output: str) -> tuple[str, Optional[str]]:
+    """Map pytest exit code + output to (status, error_kind)."""
+    if exit_code == 0:
+        return "passed", None
+    if exit_code == 5:
+        return "no_tests", None
+    if re.search(r"\b(SyntaxError|IndentationError|TabError)\b", output):
+        return "failed", "syntax"
+    errors = re.findall(r"^E\s+(\w+(?:Error|Exception))\b", output, flags=re.M)
+    non_assert = [e for e in errors if e != "AssertionError"]
+    if non_assert:
+        return "failed", "runtime"
+    if "AssertionError" in output or re.search(r"^E\s+assert ", output, flags=re.M):
+        return "failed", "assertion"
+    if exit_code == 2:  # collection / import error
+        return "failed", "runtime"
+    return "failed", "runtime"
+
+
+def _collected(output: str) -> int:
+    return sum(int(n) for n, _ in re.findall(r"(\d+) (passed|failed|errors?)\b", output))
+
+
+def _syntax_precheck(source: str) -> Optional[str]:
+    try:
+        compile(source, "test_candidate.py", "exec")
+        return None
+    except SyntaxError as exc:
+        return f"SyntaxError: line {exc.lineno}: {exc.msg}"
+
+
+POOL_NAME = "void-sandbox-pool"
+_POOL_LOCK = threading.Lock()
+
+# Runs inside the long-lived container: writes one run's files to a private
+# scratch directory, runs pytest with a timeout, prints the result as JSON and
+# deletes the directory again.
+_IN_CONTAINER = r"""
+import json, os, resource, shutil, signal, subprocess, sys, tempfile
+job = json.load(sys.stdin)
+work = tempfile.mkdtemp(prefix="run-", dir="/tmp")
+def limits():
+    mem = job["mem_mb"] * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+    resource.setrlimit(resource.RLIMIT_CPU, (job["timeout"] + 1, job["timeout"] + 1))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (16 << 20, 16 << 20))
+try:
+    for name, text in job["files"].items():
+        with open(os.path.join(work, name), "w") as fh:
+            fh.write(text)
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": work, "PYTHONDONTWRITEBYTECODE": "1"}
+    p = subprocess.Popen([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short", "test_candidate.py"],
+                         cwd=work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         preexec_fn=limits, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=job["timeout"])
+        res = {"rc": p.returncode, "out": out, "timeout": False}
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        res = {"rc": -1, "out": "", "timeout": True}
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+print("\n@@VOID@@" + json.dumps(res))
+"""
+
+
+def _ensure_pool() -> None:
+    """Start the shared sandbox container once; later runs reuse it instead of starting a new one."""
+    with _POOL_LOCK:
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", POOL_NAME], capture_output=True, text=True)
+        if r.stdout.strip() == "true":
+            return
+        subprocess.run(["docker", "rm", "-f", POOL_NAME], capture_output=True)
+        subprocess.run([
+            "docker", "run", "-d", "--name", POOL_NAME,
+            "--network", "none",
+            "--memory", f"{config.SANDBOX_MEMORY_MB * 4}m", "--memory-swap", f"{config.SANDBOX_MEMORY_MB * 4}m",
+            "--cpus", "2",
+            "--pids-limit", "256",
+            "--read-only", "--tmpfs", "/tmp:rw,size=256m",
+            "--user", "65534:65534",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "-e", "HOME=/tmp", "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "--restart", "unless-stopped",
+            config.SANDBOX_IMAGE, "sleep", "infinity",
+        ], capture_output=True, text=True, check=True)
+
+
+def _run_docker(workdir: str, timeout: int) -> tuple[int, str, bool]:
+    files = {}
+    for name in ("test_candidate.py", "conftest.py"):
+        with open(os.path.join(workdir, name), encoding="utf-8") as fh:
+            files[name] = fh.read()
+    job = json.dumps({"files": files, "timeout": timeout, "mem_mb": max(1024, config.SANDBOX_MEMORY_MB * 4)})
+    try:
+        _ensure_pool()
+        r = subprocess.run(["docker", "exec", "-i", POOL_NAME, "python", "-c", _IN_CONTAINER],
+                           input=job, capture_output=True, text=True, timeout=timeout + 15)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "rm", "-f", POOL_NAME], capture_output=True)  # wedged: next run starts a fresh one
+        return -1, "", True
+    except subprocess.CalledProcessError as exc:
+        return -2, f"Sandbox launch error: {exc.stderr or exc}", False
+    head, sep, tail = (r.stdout or "").rpartition("@@VOID@@")
+    if not sep:
+        return -2, f"Sandbox error: {(r.stderr or r.stdout or '')[-2000:]}", False
+    res = json.loads(tail)
+    return res["rc"], res["out"], res["timeout"]
+
+
+def _limits():  # pragma: no cover - runs in the child process
+    try:
+        import resource
+
+        cpu = config.SANDBOX_TIMEOUT + 1
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+        mem = config.SANDBOX_MEMORY_MB * 1024 * 1024 * 4  # address space is larger than RSS
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_file_path],
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                cwd=temp_dir
-            )
-            if result.returncode == 0:
-                return True, None
-            return False, result.stdout or result.stderr
-        except subprocess.TimeoutExpired:
-            return False, "Sandbox execution timed out (potential infinite loop or blocking call)."
-        except Exception as exc:
-            return False, f"Sandbox execution error: {str(exc)}"
+            resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+        except (ValueError, OSError):
+            pass  # not enforced on macOS
+        resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
+    except Exception:
+        pass
+
+
+def _run_subprocess(workdir: str, timeout: int) -> tuple[int, str, bool]:
+    # Scrubbed environment: nothing from the server process (API keys etc.) leaks in.
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": workdir,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHASHSEED": "0",
+        "LANG": "C.UTF-8",
+    }
+    preexec = _limits if os.name == "posix" else None
+    try:
+        p = subprocess.Popen(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short", "test_candidate.py"],
+            cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            preexec_fn=preexec, start_new_session=(os.name == "posix"),
+        )
+    except Exception as exc:
+        return -2, f"Sandbox launch error: {exc}", False
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or "", False
+    except subprocess.TimeoutExpired:
+        try:
+            if os.name == "posix":
+                os.killpg(p.pid, 9)
+            else:
+                p.kill()
+        except Exception:
+            p.kill()
+        p.communicate()
+        return -1, "", True
+
+
+def execute_in_sandbox(code: str, tests: str, timeout: Optional[int] = None) -> ExecResult:
+    """Run `tests` against `code` (concatenated into one module) and classify the outcome."""
+    timeout = timeout or config.SANDBOX_TIMEOUT
+    backend = active_backend()
+    source = _compose(code or "", tests or "")
+
+    if not (tests or "").strip():
+        return ExecResult(False, "no_tests", None, "No tests were generated.", backend)
+
+    syntax = _syntax_precheck(source)
+    if syntax:
+        return ExecResult(False, "failed", "syntax", syntax, backend)
+
+    started = time.time()
+    with tempfile.TemporaryDirectory(prefix="void_sbx_") as workdir:
+        os.chmod(workdir, 0o755)
+        path = os.path.join(workdir, "test_candidate.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        os.chmod(path, 0o644)
+        stub_roots = _third_party_roots(source)
+        conftest = os.path.join(workdir, "conftest.py")
+        with open(conftest, "w", encoding="utf-8") as fh:
+            fh.write(CONFTEST % (stub_roots,))
+        os.chmod(conftest, 0o644)
+        runner = _run_docker if backend == "docker" else _run_subprocess
+        code_rc, output, timed_out = runner(workdir, timeout)
+
+    duration = round(time.time() - started, 3)
+    if timed_out:
+        return ExecResult(False, "timeout", "timeout",
+                          f"Sandbox timed out after {timeout}s (possible infinite loop or blocking call).",
+                          backend, duration)
+    if code_rc == -2:
+        return ExecResult(False, "error", "runtime", output, backend, duration)
+
+    status, kind = classify(code_rc, output)
+    return ExecResult(status == "passed", status, kind, output[-6000:], backend, duration, _collected(output),
+                      {"stub_candidates": stub_roots})
